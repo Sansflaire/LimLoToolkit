@@ -1,0 +1,109 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Download Dalamud
+        run: |
+          Invoke-WebRequest -Uri "https://goatcorp.github.io/dalamud-distrib/stg/latest.zip" -OutFile dalamud.zip
+          Expand-Archive -Path dalamud.zip -DestinationPath "$env:APPDATA\XIVLauncher\addon\Hooks\dev" -Force
+        shell: pwsh
+
+      # NOTE: no cross-plugin dependency step here on purpose. LimLoToolkit is
+      # standalone — if a future change makes the build need a sibling plugin's
+      # DLL, that change is wrong. See CLAUDE.md "Standalone Mandate".
+
+      - name: Get version
+        id: version
+        run: |
+          $version = (Select-Xml -Path "src/LimLoToolkit.csproj" -XPath "//Version").Node.InnerText
+          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Build
+        run: dotnet build src/LimLoToolkit.csproj -c Release
+        shell: pwsh
+
+      - name: Package
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "src/bin/x64/Release/LimLoToolkit.dll" -Destination dist/
+          # Inject AssemblyVersion into the bundled manifest. Dalamud API 15+
+          # rejects zips whose manifest is missing AssemblyVersion with
+          # "Failed to install plugin". See devPlugins/BROKEN.md.
+          $manifest = Get-Content "LimLoToolkit.json" | ConvertFrom-Json
+          $manifest | Add-Member -NotePropertyName AssemblyVersion -NotePropertyValue $version -Force
+          $manifest | ConvertTo-Json -Depth 10 | Set-Content dist/LimLoToolkit.json
+          $shipped = Get-Content dist/LimLoToolkit.json | ConvertFrom-Json
+          if (-not $shipped.AssemblyVersion) {
+            Write-Error "Bundled manifest is missing AssemblyVersion — refusing to ship."
+            exit 1
+          }
+          if ($shipped.AssemblyVersion -ne $version) {
+            Write-Error "Bundled AssemblyVersion ($($shipped.AssemblyVersion)) != csproj Version ($version)."
+            exit 1
+          }
+          Compress-Archive -Path dist/* -DestinationPath LimLoToolkit.zip -Force
+        shell: pwsh
+
+      - name: Verify bundled manifest in final zip
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path LimLoToolkit.zip))
+          try {
+            $entry = $zip.Entries | Where-Object { $_.Name -eq "LimLoToolkit.json" }
+            if (-not $entry) { throw "LimLoToolkit.json missing from zip" }
+            $reader = New-Object System.IO.StreamReader($entry.Open())
+            $json = $reader.ReadToEnd() | ConvertFrom-Json
+            if (-not $json.AssemblyVersion) { throw "AssemblyVersion missing in zip manifest" }
+            if (-not $json.DalamudApiLevel) { throw "DalamudApiLevel missing in zip manifest" }
+            if ($json.InternalName -ne "LimLoToolkit") { throw "InternalName mismatch" }
+            Write-Host "OK: zip manifest -> $($json.InternalName) v$($json.AssemblyVersion) API$($json.DalamudApiLevel)"
+          } finally { $zip.Dispose() }
+        shell: pwsh
+
+      - name: Update pluginmaster.json version
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+          $json = @(Get-Content pluginmaster.json | ConvertFrom-Json)
+          $json[0].AssemblyVersion = $version
+          $json[0].TestingAssemblyVersion = $version
+          $json | ConvertTo-Json -Depth 10 -AsArray | Set-Content pluginmaster.json
+        shell: pwsh
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          name: v${{ steps.version.outputs.VERSION }}
+          files: LimLoToolkit.zip
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit updated pluginmaster.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pluginmaster.json
+          git diff --staged --quiet || git commit -m "ci: update pluginmaster.json to v${{ steps.version.outputs.VERSION }}"
+          git push
+        shell: pwsh

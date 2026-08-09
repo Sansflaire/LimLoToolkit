@@ -1,0 +1,15 @@
+bin/
+obj/
+dist/
+*.user
+*.suo
+.vs/
+
+# Build output lands in the repo root because the repo IS the dev-plugin folder.
+LimLoToolkit.dll
+LimLoToolkit.pdb
+LimLoToolkit.deps.json
+*.zip
+
+# Session rules are local-only.
+CLAUDE.md
