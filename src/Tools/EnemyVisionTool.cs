@@ -157,13 +157,14 @@ public sealed class EnemyVisionTool : ITool
                 if (distance > RenderDistance)
                     continue;
 
-                // Marked irrelevant. Still handed to the trainer so a pull from
-                // it is reported rather than vanishing — silence here is
-                // indistinguishable from the trainer being broken.
-                var ignored = _store.IsIgnored(obj.BaseId);
-
                 var omnidirectional = _bnpcSheet?.GetRowOrDefault(obj.BaseId)?.IsOmnidirectional ?? false;
                 var name            = obj.Name.ToString();
+
+                // Marked irrelevant, either explicitly or by the name rule.
+                // Still handed to the trainer so a pull from it is reported
+                // rather than vanishing — silence here is indistinguishable
+                // from the trainer being broken.
+                var ignored = _store.ShouldSkip(obj.BaseId, name);
 
                 tracked.Add(new TrackedEnemy(
                     obj,
@@ -452,6 +453,28 @@ public sealed class EnemyVisionTool : ITool
         {
             _config.HighlightEnemyVisionWhenInside = highlight;
             Plugin.SaveConfiguration();
+        }
+
+        var autoIgnore = _config.AutoIgnoreNonMatchingNames;
+        if (ImGui.Checkbox("Only track mobs named with a prefix", ref autoIgnore))
+        {
+            _config.AutoIgnoreNonMatchingNames = autoIgnore;
+            Plugin.SaveConfiguration();
+        }
+        UiHelpers.HelpMarker(
+            "Every Occult Crescent field mob is named \"Crescent something\". Anything else is a " +
+            "summon, an add, or scenery — skipped for both drawing and training. This is a live " +
+            "rule, not a stored list, so turning it off brings everything straight back.");
+
+        if (_config.AutoIgnoreNonMatchingNames)
+        {
+            ImGui.SetNextItemWidth(160f);
+            var prefix = _config.TrackedNamePrefix ?? string.Empty;
+            if (ImGui.InputText("Required name prefix", ref prefix, 32))
+            {
+                _config.TrackedNamePrefix = prefix;
+                Plugin.SaveConfiguration();
+            }
         }
 
         var useLearned = _config.UseLearnedAggroRanges;

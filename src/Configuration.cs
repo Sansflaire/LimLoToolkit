@@ -102,6 +102,21 @@ public sealed class Configuration : IPluginConfiguration
     /// </summary>
     public List<uint> IgnoredMobBaseIds { get; set; } = new();
 
+    /// <summary>
+    /// Ignore anything whose name does not start with
+    /// <see cref="TrackedNamePrefix"/>. Every Occult Crescent field mob is
+    /// named "Crescent something", so anything else is a summon, an add, or
+    /// scenery — noise for both drawing and training.
+    ///
+    /// This is a live rule rather than entries written into
+    /// <see cref="IgnoredMobBaseIds"/>: it stays reversible with one click and
+    /// does not bloat the stored list with hundreds of ids.
+    /// </summary>
+    public bool AutoIgnoreNonMatchingNames { get; set; } = true;
+
+    /// <summary>Name prefix a mob must carry to be tracked. Case-insensitive.</summary>
+    public string TrackedNamePrefix { get; set; } = "Crescent";
+
     public bool IsToolEnabled(string id) =>
         !EnabledTools.TryGetValue(id, out var enabled) || enabled;
 

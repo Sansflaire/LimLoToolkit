@@ -369,6 +369,29 @@ public sealed class AggroLearningStore
     /// <summary>Mobs marked irrelevant get no shape drawn and no samples taken.</summary>
     public bool IsIgnored(uint baseId) => _ignored.Contains(baseId);
 
+    /// <summary>
+    /// True when a mob is filtered out by the name rule rather than by an
+    /// explicit ignore. Kept separate so the UI can explain WHICH kind of
+    /// ignore is in play — "you ignored this" and "it is not a Crescent mob"
+    /// are very different messages.
+    /// </summary>
+    public bool IsAutoIgnoredByName(string name)
+    {
+        if (!_config.AutoIgnoreNonMatchingNames)
+            return false;
+
+        var prefix = _config.TrackedNamePrefix?.Trim();
+        if (string.IsNullOrEmpty(prefix))
+            return false;
+
+        return string.IsNullOrEmpty(name)
+               || !name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Either kind of ignore.</summary>
+    public bool ShouldSkip(uint baseId, string name) =>
+        IsIgnored(baseId) || IsAutoIgnoredByName(name);
+
     public void SetIgnored(uint baseId, bool ignored)
     {
         if (ignored)

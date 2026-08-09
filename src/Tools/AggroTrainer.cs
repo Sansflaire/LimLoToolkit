@@ -207,10 +207,12 @@ public sealed class AggroTrainer
             {
                 if (tracked.Ignored)
                 {
-                    // Never swallow this silently. A mob on the ignore list
-                    // dropping its pull with no message looks identical to the
-                    // trainer being broken.
-                    Log($"{tracked.Name} pulled, but it is on your ignore list — not recorded.", false);
+                    // Never swallow this silently. A dropped pull with no
+                    // message looks identical to the trainer being broken.
+                    Log(_store.IsAutoIgnoredByName(tracked.Name)
+                            ? $"{tracked.Name} pulled — not a tracked name, skipped."
+                            : $"{tracked.Name} pulled, but it is on your ignore list — not recorded.",
+                        false);
                 }
                 else if (!watchedLongEnough)
                 {

@@ -80,6 +80,14 @@ public sealed class MobViewerTool : ITool
                 if (obj is not IBattleNpc battleNpc || battleNpc.BattleNpcKind != BattleNpcSubKind.Combatant)
                     continue;
 
+                var name = obj.Name.ToString();
+
+                // Names outside the tracked prefix are noise and never get an
+                // entry. Explicitly-ignored mobs DO stay listed, otherwise they
+                // could never be un-ignored from here.
+                if (_store.IsAutoIgnoredByName(name))
+                    continue;
+
                 nearby.Add(obj.BaseId);
 
                 // Record a placeholder for anything we have never measured, so
@@ -90,7 +98,7 @@ public sealed class MobViewerTool : ITool
                 _seenOnly[obj.BaseId] = new AggroProfile
                 {
                     BaseId               = obj.BaseId,
-                    Name                 = obj.Name.ToString(),
+                    Name                 = name,
                     SheetOmnidirectional = _bnpcSheet?.GetRowOrDefault(obj.BaseId)?.IsOmnidirectional ?? false,
                     TerritoryId          = (ushort)Plugin.ClientState.TerritoryType,
                     Level                = battleNpc.Level,
