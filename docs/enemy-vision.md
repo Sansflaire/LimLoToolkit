@@ -77,19 +77,73 @@ member, and `Combatant` (5) is what ordinary field mobs use. This excludes
 pets, buddies, race chocobos, minions, party members, and BNpc body parts,
 which all share `ObjectKind.BattleNpc`.
 
-## If you want it accurate
+## Training mode — measuring it for real
 
-The honest options, in increasing effort:
+Opt-in, off by default (it keeps per-enemy history buffers while running). When
+on, every pull onto the player is recorded and the drawn shapes switch from the
+slider to measured numbers per mob.
 
-1. **Tune the one number** until the shape matches where you actually get
-   pulled. Cheap, and good enough for "don't walk into that".
-2. **Per-enemy overrides** — a small table keyed by `BNpcBase` id, filled in as
-   you measure them. The panel already shows each enemy's `BNpcBase` id for
-   exactly this reason.
-3. **Learn it automatically** — watch for the moment an enemy switches to
-   in-combat with you, record the distance at that instant, and build the table
-   from real pulls. This is the only route to real numbers without hand
-   measurement, and it is how a community dataset would get built.
+**The signal.** An enemy's `TargetObjectId` flipping to the player. Precise, no
+hooks needed.
+
+### Two timing problems, and what is done about them
+
+**1. Position lag.** By the time the pull reaches the client, you have walked
+closer than you were when you actually crossed the line. The player position
+used is therefore the one from **150 ms ago**, not the current one. Residual
+error still biases every sample *low* — which is why the estimator tracks the
+**upper end** of the distribution rather than the mean. Nothing biases a sample
+high except a misattributed pull, and those are filtered out (below).
+
+**2. The mob turns to face you.** This one silently ruins the cone if you miss
+it. A mob rotates toward its new target immediately, so its facing at detection
+time points almost straight at you — measuring the angle then would report ~0°
+for every mob and collapse every cone to nothing. The facing used is therefore
+from **400 ms ago**, before it turned. If the mob rotated more than **30°**
+across that window it was already turning, so the angle is discarded as
+untrustworthy while the distance is still kept.
+
+### Rejecting pulls that were not proximity detection
+
+A mob can target you because you hit it, because it linked off a neighbour, or
+because it was already fighting. All three would poison the data:
+
+- the player must have been **out of combat on the previous frame** (the pull
+  itself flips the player into combat on the same frame, so the previous frame's
+  value is the one that matters)
+- the enemy must **not already have been in combat**
+- only the **first pull in a 1000 ms window** is recorded, so a chain of linked
+  adds contributes one clean sample instead of five bad ones
+- the gap must be within 0–50 y, or it is discarded as nonsense
+
+### Turning samples into numbers
+
+| Quantity | Rule |
+|----------|------|
+| Range | 90th percentile once there are ≥10 samples, plain maximum before that |
+| Cone | (widest observed angle + 10° margin) × 2, since the cone is symmetric |
+| Confidence | **Green/solved** at ≥8 samples *and* ≥4 consecutive samples that did not grow the maximum. **Amber** with any samples. **Red** with none. |
+
+The "stopped growing" half of the green condition is the important one: a plain
+sample count would call a mob solved while its measured range was still
+climbing.
+
+All measurements are hitring-to-hitring gaps, matching what the slider means.
+
+### It also verifies the sight/sound flag
+
+If a mob the sheet calls forward-only ever pulls from more than **100°** off its
+facing, that is recorded as a rear pull. Any rear pull flips the mob to
+omnidirectional for drawing and raises a contradiction warning in the Mob
+Viewer. So the `IsOmnidirectional` reading is not merely trusted — it gets
+checked against real behaviour for every mob you meet, which is the empirical
+answer to "how accurate is sight vs sound".
+
+## Ignoring irrelevant mobs
+
+Mobs can be marked irrelevant by `BNpcBase` id, from the Enemy Vision table or
+the Mob Viewer. Ignored mobs get no shape drawn and contribute no samples.
+Anything already measured is kept, so un-ignoring restores it.
 
 ## Re-verify after a patch
 

@@ -69,6 +69,32 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>Recolour a shape when the player is standing inside it.</summary>
     public bool HighlightEnemyVisionWhenInside { get; set; } = true;
 
+    // --- Aggro training ---
+
+    /// <summary>
+    /// Watch every nearby enemy each frame and record the geometry of any pull
+    /// onto the player. Off by default — it keeps per-enemy history buffers, so
+    /// there is no reason to run it once a mob is solved.
+    /// </summary>
+    public bool AggroTrainingEnabled { get; set; } = false;
+
+    /// <summary>Draw measured ranges instead of the global slider where available.</summary>
+    public bool UseLearnedAggroRanges { get; set; } = true;
+
+    /// <summary>
+    /// Everything measured so far, one entry per mob type. A plain list rather
+    /// than a dictionary so it round-trips through config serialization without
+    /// depending on non-string dictionary key support.
+    /// </summary>
+    public List<Tools.AggroProfile> LearnedAggro { get; set; } = new();
+
+    /// <summary>
+    /// Mob types the user has marked irrelevant, by <c>BNpcBase</c> id. These
+    /// are skipped entirely: no shape drawn, no training samples taken. A list
+    /// rather than a set, for the same serialization reason as above.
+    /// </summary>
+    public List<uint> IgnoredMobBaseIds { get; set; } = new();
+
     public bool IsToolEnabled(string id) =>
         !EnabledTools.TryGetValue(id, out var enabled) || enabled;
 

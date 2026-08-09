@@ -15,6 +15,23 @@ public static class UiHelpers
     public static readonly Vector4 Dim    = new(0.62f, 0.64f, 0.68f, 1.00f);
     public static readonly Vector4 Good   = new(0.45f, 0.82f, 0.50f, 1.00f);
     public static readonly Vector4 Warn   = new(0.95f, 0.72f, 0.32f, 1.00f);
+    public static readonly Vector4 Bad    = new(0.92f, 0.36f, 0.34f, 1.00f);
+
+    /// <summary>Green / amber / red for a solved, partial, or empty data set.</summary>
+    public static Vector4 ConfidenceColor(Tools.AggroConfidence confidence) => confidence switch
+    {
+        Tools.AggroConfidence.Confident => Good,
+        Tools.AggroConfidence.Learning  => Warn,
+        _                               => Bad,
+    };
+
+    /// <summary>Coloured text, one call.</summary>
+    public static void Colored(Vector4 color, string text)
+    {
+        ImGui.PushStyleColor(ImGuiCol.Text, color);
+        ImGui.TextUnformatted(text);
+        ImGui.PopStyleColor();
+    }
 
     /// <summary>Accent-coloured heading with a separator under it.</summary>
     public static void SectionHeader(string text)

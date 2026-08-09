@@ -12,32 +12,12 @@ using Lumina.Excel.Sheets;
 namespace LimLoToolkit.Tools;
 
 /// <summary>
-/// Draws each nearby enemy's detection shape on the ground in the Occult
-/// Crescent: a cone for sight-based enemies, a full circle for sound-based
-/// ones.
+/// Draws each nearby enemy's detection shape on the ground: a cone for enemies
+/// that only see forwards, a circle for those that detect in every direction.
 ///
-/// WHAT IS REAL AND WHAT IS ESTIMATED — read this before trusting the drawing:
-///
-///  - The SHAPE is real game data. <c>BNpcBase.IsOmnidirectional</c> is a per-
-///    enemy flag in the game's own sheets (4216 of 20402 rows have it set).
-///    Set means the enemy detects in every direction — the "sound" aggro
-///    everyone knows. Clear means it only detects in front of itself.
-///  - The RADIUS and CONE ANGLE are NOT real game data. Aggro range appears
-///    nowhere in the game's sheets — there is no aggro/sight/detection sheet,
-///    and BNpcBase carries no distance column. Every plugin that draws these
-///    (RadarPlugin, Distance, NecroLens) ships hand-measured community tables
-///    or hardcoded per-zone constants. Ours is a single tunable number.
-///
-/// So: trust the cone-versus-circle. Treat the size as a configurable guess.
-/// The panel says so too — this must never look more authoritative than it is.
-///
-/// Geometry notes:
-///  - Facing is <c>(sin r, 0, cos r)</c>, the inverse of the
-///    <c>Atan2(dx, dz)</c> used by this repo's own working walk-to routine in
-///    EasterEvent's Walker.
-///  - Radius is measured from the hitbox edge, so the drawn radius is the
-///    configured distance plus the enemy's <c>HitboxRadius</c>. FFXIV measures
-///    ranges hitring-to-hitring, not centre-to-centre.
+/// The SHAPE is real game data (<c>BNpcBase.IsOmnidirectional</c>). The SIZE
+/// starts as a guess and becomes measured once training mode has watched enough
+/// real pulls — see <see cref="AggroTrainer"/> and docs/enemy-vision.md.
 /// </summary>
 public sealed class EnemyVisionTool : ITool
 {
@@ -54,65 +34,86 @@ public sealed class EnemyVisionTool : ITool
     public const float MinCone   = 15f;
     public const float MaxCone   = 360f;
 
-    /// <summary>Beyond this the shapes are clutter and cost projection work.</summary>
     private const float RenderDistance = 70f;
-
     private const int   CircleSegments = 48;
     private const float ShapeThickness = 2.5f;
 
-    private static readonly Vector4 SightColor   = new(0.98f, 0.75f, 0.25f, 0.85f);
-    private static readonly Vector4 SoundColor   = new(0.62f, 0.55f, 0.95f, 0.85f);
-    private static readonly Vector4 DangerColor  = new(1.00f, 0.30f, 0.28f, 0.95f);
+    private static readonly Vector4 SightColor  = new(0.98f, 0.75f, 0.25f, 0.85f);
+    private static readonly Vector4 SoundColor  = new(0.62f, 0.55f, 0.95f, 0.85f);
+    private static readonly Vector4 DangerColor = new(1.00f, 0.30f, 0.28f, 0.95f);
 
-    private readonly struct Enemy(
-        Vector3 position,
-        float   facing,
-        float   radius,
-        bool    omnidirectional,
-        bool    playerInside,
-        string  name,
-        uint    baseId,
-        float   distance)
+    private readonly struct Shape(
+        Vector3         position,
+        float           facing,
+        float           radius,
+        float           coneDegrees,
+        bool            omnidirectional,
+        bool            playerInside,
+        string          name,
+        uint            baseId,
+        float           distance,
+        AggroConfidence confidence,
+        bool            measured)
     {
-        public Vector3 Position        { get; } = position;
-        public float   Facing          { get; } = facing;
-        /// <summary>Already includes the hitbox radius.</summary>
-        public float   Radius          { get; } = radius;
-        public bool    Omnidirectional { get; } = omnidirectional;
-        public bool    PlayerInside    { get; } = playerInside;
-        public string  Name            { get; } = name;
-        public uint    BaseId          { get; } = baseId;
-        public float   Distance        { get; } = distance;
+        public Vector3         Position        { get; } = position;
+        public float           Facing          { get; } = facing;
+        /// <summary>Drawn radius — the hitring gap PLUS the enemy's hitbox.</summary>
+        public float           Radius          { get; } = radius;
+        /// <summary>Hitring-to-hitring gap, i.e. what the slider and samples mean.</summary>
+        public float           Gap             { get; init; }
+        public float           ConeDegrees     { get; } = coneDegrees;
+        public bool            Omnidirectional { get; } = omnidirectional;
+        public bool            PlayerInside    { get; } = playerInside;
+        public string          Name            { get; } = name;
+        public uint            BaseId          { get; } = baseId;
+        public float           Distance        { get; } = distance;
+        public AggroConfidence Confidence      { get; } = confidence;
+        public bool            Measured        { get; } = measured;
     }
 
-    private readonly Configuration _config;
+    private readonly Configuration      _config;
+    private readonly AggroLearningStore _store;
+    private readonly AggroTrainer       _trainer;
 
     private ExcelSheet<BNpcBase>? _bnpcSheet;
 
-    private List<Enemy> _enemies = new();
+    private List<Shape> _shapes = new();
     private bool        _inOccultCrescent;
     private int         _threateningCount;
+    private bool        _trainingWasEnabled;
 
-    public EnemyVisionTool(Configuration config) => _config = config;
+    public EnemyVisionTool(Configuration config, AggroLearningStore store, AggroTrainer trainer)
+    {
+        _config  = config;
+        _store   = store;
+        _trainer = trainer;
+    }
 
     private static bool IsOccultCrescent(ushort territory) =>
         territory is TerritorySouthHorn or TerritoryNorthHorn;
 
-    /// <summary>Forward vector for a FFXIV rotation, in the XZ plane.</summary>
     private static Vector3 FacingVector(float rotation) =>
         new(MathF.Sin(rotation), 0f, MathF.Cos(rotation));
 
     public void OnFrameworkUpdate()
     {
-        var found       = new List<Enemy>();
+        var shapes      = new List<Shape>();
         var threatening = 0;
 
         try
         {
-            _inOccultCrescent = IsOccultCrescent((ushort)Plugin.ClientState.TerritoryType);
+            var territory = (ushort)Plugin.ClientState.TerritoryType;
+            _inOccultCrescent = IsOccultCrescent(territory);
+
+            // Training keeps per-enemy history buffers. Drop them the moment it
+            // is switched off so nothing lingers.
+            if (_trainingWasEnabled && !_config.AggroTrainingEnabled)
+                _trainer.Reset();
+            _trainingWasEnabled = _config.AggroTrainingEnabled;
+
             if (!_inOccultCrescent)
             {
-                _enemies = found;
+                _shapes = shapes;
                 _threateningCount = 0;
                 return;
             }
@@ -120,7 +121,7 @@ public sealed class EnemyVisionTool : ITool
             var player = Plugin.ObjectTable.LocalPlayer;
             if (player == null)
             {
-                _enemies = found;
+                _shapes = shapes;
                 _threateningCount = 0;
                 return;
             }
@@ -130,9 +131,10 @@ public sealed class EnemyVisionTool : ITool
 
             _bnpcSheet ??= Plugin.DataManager.GetExcelSheet<BNpcBase>();
 
-            var configuredRadius = Math.Clamp(_config.EnemyVisionRadius, MinRadius, MaxRadius);
-            var halfConeRadians  = Math.Clamp(_config.EnemyVisionConeDegrees, MinCone, MaxCone)
-                                   * 0.5f * MathF.PI / 180f;
+            var fallbackRadius = Math.Clamp(_config.EnemyVisionRadius, MinRadius, MaxRadius);
+            var fallbackCone   = Math.Clamp(_config.EnemyVisionConeDegrees, MinCone, MaxCone);
+
+            var tracked = new List<TrackedEnemy>();
 
             foreach (var obj in Plugin.ObjectTable)
             {
@@ -142,10 +144,9 @@ public sealed class EnemyVisionTool : ITool
                 if (!obj.IsValid() || obj.IsDead)
                     continue;
 
-                // Combatant (5) is the sub-kind ordinary field mobs use. This
-                // filters out pets, buddies, race chocobos, minions, party
-                // members, and BNpc body-parts, which all share ObjectKind
-                // BattleNpc. (The enum has no "Enemy" member — Combatant is it.)
+                // Combatant (5) is what ordinary field mobs use; the enum has no
+                // "Enemy" member. Excludes pets, buddies, race chocobos,
+                // minions, party members and BNpc body parts.
                 if (obj is not IBattleNpc battleNpc || battleNpc.BattleNpcKind != BattleNpcSubKind.Combatant)
                     continue;
 
@@ -153,51 +154,75 @@ public sealed class EnemyVisionTool : ITool
                 if (distance > RenderDistance)
                     continue;
 
+                // Marked irrelevant: no shape, no training sample, no row.
+                if (_store.IsIgnored(obj.BaseId))
+                    continue;
+
                 var omnidirectional = _bnpcSheet?.GetRowOrDefault(obj.BaseId)?.IsOmnidirectional ?? false;
+                var name            = obj.Name.ToString();
 
-                // FFXIV measures range hitring to hitring, so the shape starts
-                // at the enemy's hitbox edge rather than its centre.
-                var radius = configuredRadius + obj.HitboxRadius;
+                tracked.Add(new TrackedEnemy(
+                    obj,
+                    obj.BaseId,
+                    name,
+                    omnidirectional,
+                    battleNpc.StatusFlags.HasFlag(StatusFlags.InCombat),
+                    battleNpc.Level,
+                    battleNpc.MaxHp,
+                    obj.HitboxRadius,
+                    distance));
 
-                // The player is "inside" when their own hitring crosses the
-                // shape — and, for a sight enemy, when they are also within the
-                // cone's arc.
+                // Measured numbers win over the slider when we have them.
+                var profile    = _store.Find(obj.BaseId);
+                var confidence = _store.ConfidenceOf(profile);
+
+                var learnedDistance = _config.UseLearnedAggroRanges ? _store.EstimatedDistance(profile) : null;
+                var learnedCone     = _config.UseLearnedAggroRanges ? _store.EstimatedConeDegrees(profile) : null;
+
+                var gap  = learnedDistance ?? fallbackRadius;
+                var cone = learnedCone     ?? fallbackCone;
+
+                // Measurements can contradict the sheet: a "sees only forwards"
+                // mob that pulled from behind is really omnidirectional.
+                var effectiveOmni = omnidirectional || AggroLearningStore.ContradictsSheet(profile);
+
+                var radius = gap + obj.HitboxRadius;
                 var inside = distance - playerHitbox <= radius;
-                if (inside && !omnidirectional)
-                {
-                    var toPlayer = playerPos - obj.Position;
-                    toPlayer.Y = 0f;
 
-                    if (toPlayer.LengthSquared() > 0.0001f)
-                    {
-                        var forward = FacingVector(obj.Rotation);
-                        var cos     = Vector3.Dot(Vector3.Normalize(toPlayer), forward);
-                        inside = MathF.Acos(Math.Clamp(cos, -1f, 1f)) <= halfConeRadians;
-                    }
+                if (inside && !effectiveOmni && cone < 360f)
+                {
+                    var angle = AggroLearningStore.AngleOffFacing(obj.Position, obj.Rotation, playerPos);
+                    inside = angle <= cone * 0.5f;
                 }
 
                 if (inside)
                     threatening++;
 
-                found.Add(new Enemy(
+                shapes.Add(new Shape(
                     obj.Position,
                     obj.Rotation,
                     radius,
-                    omnidirectional,
+                    effectiveOmni ? 360f : cone,
+                    effectiveOmni,
                     inside,
-                    obj.Name.ToString(),
+                    name,
                     obj.BaseId,
-                    distance));
+                    distance,
+                    confidence,
+                    learnedDistance.HasValue) { Gap = gap });
             }
 
-            found.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+            shapes.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+
+            if (_config.AggroTrainingEnabled)
+                _trainer.Tick(player, tracked, territory);
         }
         catch (Exception ex)
         {
-            Plugin.Log.Error(ex, "EnemyVisionTool failed to scan for enemies.");
+            Plugin.Log.Error(ex, "EnemyVisionTool failed during its framework tick.");
         }
 
-        _enemies          = found;
+        _shapes           = shapes;
         _threateningCount = threatening;
     }
 
@@ -211,42 +236,35 @@ public sealed class EnemyVisionTool : ITool
         if (!_config.ShowSightEnemyVision && !_config.ShowSoundEnemyVision)
             return;
 
-        var enemies = _enemies;
-        if (enemies.Count == 0)
+        var shapes = _shapes;
+        if (shapes.Count == 0)
             return;
 
-        var drawList   = ImGui.GetForegroundDrawList();
-        var coneDegs   = Math.Clamp(_config.EnemyVisionConeDegrees, MinCone, MaxCone);
-        var highlight  = _config.HighlightEnemyVisionWhenInside;
+        var drawList  = ImGui.GetForegroundDrawList();
+        var highlight = _config.HighlightEnemyVisionWhenInside;
 
-        foreach (var enemy in enemies)
+        foreach (var shape in shapes)
         {
-            if (enemy.Omnidirectional && !_config.ShowSoundEnemyVision)
+            if (shape.Omnidirectional && !_config.ShowSoundEnemyVision)
                 continue;
-            if (!enemy.Omnidirectional && !_config.ShowSightEnemyVision)
+            if (!shape.Omnidirectional && !_config.ShowSightEnemyVision)
                 continue;
 
             var colour = ImGui.ColorConvertFloat4ToU32(
-                highlight && enemy.PlayerInside
+                highlight && shape.PlayerInside
                     ? DangerColor
-                    : enemy.Omnidirectional ? SoundColor : SightColor);
+                    : shape.Omnidirectional ? SoundColor : SightColor);
 
-            // A sound enemy, or a cone opened up to a full turn, is just a circle.
-            if (enemy.Omnidirectional || coneDegs >= 360f)
-                DrawGroundCircle(drawList, enemy.Position, enemy.Radius, colour);
+            if (shape.Omnidirectional || shape.ConeDegrees >= 360f)
+                DrawGroundCircle(drawList, shape.Position, shape.Radius, colour);
             else
-                DrawGroundCone(drawList, enemy.Position, enemy.Radius, enemy.Facing, coneDegs, colour);
+                DrawGroundCone(drawList, shape.Position, shape.Radius, shape.Facing, shape.ConeDegrees, colour);
         }
     }
 
-    /// <summary>
-    /// Ground circle in the XZ plane. Segments whose endpoints leave the screen
-    /// are dropped rather than drawn to a garbage projection.
-    /// </summary>
     private static void DrawGroundCircle(ImDrawListPtr drawList, Vector3 centre, float radius, uint colour)
     {
         Vector2? previous = null;
-        Vector2? first    = null;
 
         for (var i = 0; i <= CircleSegments; i++)
         {
@@ -262,8 +280,6 @@ public sealed class EnemyVisionTool : ITool
                 continue;
             }
 
-            first ??= screen;
-
             if (previous is { } prev)
                 drawList.AddLine(prev, screen, colour, ShapeThickness);
 
@@ -271,10 +287,6 @@ public sealed class EnemyVisionTool : ITool
         }
     }
 
-    /// <summary>
-    /// Ground cone: the arc, plus the two edges back to the enemy, so it reads
-    /// as a wedge rather than a floating curve.
-    /// </summary>
     private static void DrawGroundCone(
         ImDrawListPtr drawList,
         Vector3       centre,
@@ -286,14 +298,13 @@ public sealed class EnemyVisionTool : ITool
         var half     = coneDegrees * 0.5f * MathF.PI / 180f;
         var segments = Math.Max(8, (int)(CircleSegments * (coneDegrees / 360f)));
 
-        Vector2? previous     = null;
-        Vector2? arcStart     = null;
-        Vector2? arcEnd       = null;
+        Vector2? previous = null;
+        Vector2? arcStart = null;
+        Vector2? arcEnd   = null;
         var      centreOnScreen = Plugin.GameGui.WorldToScreen(centre, out var centreScreen);
 
         for (var i = 0; i <= segments; i++)
         {
-            // Sweep from one cone edge to the other, around the facing angle.
             var angle = facing - half + i / (float)segments * (half * 2f);
             var point = new Vector3(
                 centre.X + radius * MathF.Sin(angle),
@@ -331,28 +342,21 @@ public sealed class EnemyVisionTool : ITool
     {
         UiHelpers.SectionHeader("Enemy Vision");
         UiHelpers.Muted(
-            "Draws what each nearby enemy can detect: a wedge in front of sight-based " +
-            "enemies, a full circle around sound-based ones. Occult Crescent only.");
-
-        ImGui.Spacing();
-        ImGui.PushStyleColor(ImGuiCol.Text, UiHelpers.Warn);
-        ImGui.TextWrapped(
-            "The shape is real: whether an enemy sees in a cone or hears in all directions " +
-            "comes straight from the game's own data, per enemy. The SIZE is not — the game " +
-            "never publishes aggro range, so the distance below is an estimate you tune by eye.");
-        ImGui.PopStyleColor();
+            "Draws what each nearby enemy can detect: a wedge in front of enemies that only " +
+            "see forwards, a full circle around ones that detect in all directions. " +
+            "Occult Crescent only.");
 
         ImGui.Spacing();
 
         var sight = _config.ShowSightEnemyVision;
-        if (ImGui.Checkbox("Show sight enemies (cone)", ref sight))
+        if (ImGui.Checkbox("Show forward-facing enemies (cone)", ref sight))
         {
             _config.ShowSightEnemyVision = sight;
             Plugin.SaveConfiguration();
         }
 
         var sound = _config.ShowSoundEnemyVision;
-        if (ImGui.Checkbox("Show sound enemies (circle)", ref sound))
+        if (ImGui.Checkbox("Show all-direction enemies (circle)", ref sound))
         {
             _config.ShowSoundEnemyVision = sound;
             Plugin.SaveConfiguration();
@@ -365,7 +369,19 @@ public sealed class EnemyVisionTool : ITool
             Plugin.SaveConfiguration();
         }
 
+        var useLearned = _config.UseLearnedAggroRanges;
+        if (ImGui.Checkbox("Use measured ranges where available", ref useLearned))
+        {
+            _config.UseLearnedAggroRanges = useLearned;
+            Plugin.SaveConfiguration();
+        }
+        UiHelpers.HelpMarker(
+            "Mobs with training data use their measured range and cone. " +
+            "Everything else falls back to the sliders below.");
+
         ImGui.Spacing();
+        UiHelpers.SectionHeader("Fallback Estimates");
+        UiHelpers.Muted("Used for any mob with no measurements yet.");
 
         var radius = Math.Clamp(_config.EnemyVisionRadius, MinRadius, MaxRadius);
         ImGui.SetNextItemWidth(200f);
@@ -374,9 +390,6 @@ public sealed class EnemyVisionTool : ITool
             _config.EnemyVisionRadius = Math.Clamp(radius, MinRadius, MaxRadius);
             Plugin.SaveConfiguration();
         }
-        UiHelpers.HelpMarker(
-            "Measured from the enemy's hitbox edge, the way the game measures range. " +
-            "Tune it until the shape matches where you actually get pulled.");
 
         var cone = Math.Clamp(_config.EnemyVisionConeDegrees, MinCone, MaxCone);
         ImGui.SetNextItemWidth(200f);
@@ -385,7 +398,9 @@ public sealed class EnemyVisionTool : ITool
             _config.EnemyVisionConeDegrees = Math.Clamp(cone, MinCone, MaxCone);
             Plugin.SaveConfiguration();
         }
-        UiHelpers.HelpMarker("90 degrees is the figure the community uses for Deep Dungeon sight mobs.");
+
+        ImGui.Spacing();
+        DrawTrainingSection();
 
         ImGui.Spacing();
         UiHelpers.SectionHeader("Nearby Enemies");
@@ -398,61 +413,139 @@ public sealed class EnemyVisionTool : ITool
             return;
         }
 
-        var enemies = _enemies;
-        if (enemies.Count == 0)
+        var shapes = _shapes;
+        if (shapes.Count == 0)
         {
-            UiHelpers.Muted("No enemies within range.");
+            UiHelpers.Muted(_store.IgnoredCount > 0
+                ? $"No enemies within range. ({_store.IgnoredCount} mob type(s) ignored — manage them in Mob Viewer.)"
+                : "No enemies within range.");
             return;
+        }
+
+        if (_store.IgnoredCount > 0)
+        {
+            UiHelpers.Muted($"{_store.IgnoredCount} mob type(s) ignored and hidden. Manage them in Mob Viewer.");
+            ImGui.Spacing();
         }
 
         if (_threateningCount > 0)
         {
-            ImGui.PushStyleColor(ImGuiCol.Text, UiHelpers.Warn);
-            ImGui.TextWrapped($"{_threateningCount} enemy/enemies could currently detect you.");
-            ImGui.PopStyleColor();
+            UiHelpers.Colored(UiHelpers.Warn, $"{_threateningCount} enemy/enemies could currently detect you.");
             ImGui.Spacing();
         }
 
-        // This table doubles as the verification surface: it shows the aggro
-        // type read straight from the sheet, per enemy, so a wrong reading is
-        // visible rather than silently drawn.
-        if (ImGui.BeginTable("##limlo-vision", 4, ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.RowBg))
+        DrawLegend();
+
+        if (ImGui.BeginTable("##limlo-vision", 6, ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.RowBg))
         {
             ImGui.TableSetupColumn("Enemy");
             ImGui.TableSetupColumn("Detects");
+            ImGui.TableSetupColumn("Range");
             ImGui.TableSetupColumn("Distance");
-            ImGui.TableSetupColumn("BNpcBase");
+            ImGui.TableSetupColumn("Data");
+            ImGui.TableSetupColumn("");
             ImGui.TableHeadersRow();
 
-            foreach (var enemy in enemies)
+            foreach (var shape in shapes)
             {
                 ImGui.TableNextRow();
 
                 ImGui.TableNextColumn();
-                if (enemy.PlayerInside)
+                UiHelpers.Colored(
+                    shape.PlayerInside ? DangerColor : UiHelpers.ConfidenceColor(shape.Confidence),
+                    shape.Name);
+
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(shape.Omnidirectional
+                    ? "All directions"
+                    : $"In front ({shape.ConeDegrees:F0}°)");
+
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(shape.Measured ? $"{shape.Gap:F1}y measured" : $"{shape.Gap:F1}y est.");
+
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted($"{shape.Distance:F1}y");
+
+                ImGui.TableNextColumn();
+                var profile = _store.Find(shape.BaseId);
+                UiHelpers.Colored(
+                    UiHelpers.ConfidenceColor(shape.Confidence),
+                    DescribeConfidence(shape.Confidence, profile?.Distances.Count ?? 0));
+
+                ImGui.TableNextColumn();
+                if (ImGui.SmallButton($"Ignore###limlo-ignore-{shape.BaseId}"))
                 {
-                    ImGui.PushStyleColor(ImGuiCol.Text, DangerColor);
-                    ImGui.TextUnformatted(enemy.Name);
-                    ImGui.PopStyleColor();
+                    _store.SetIgnored(shape.BaseId, true);
+                    Plugin.SaveConfiguration();
                 }
-                else
-                {
-                    ImGui.TextUnformatted(enemy.Name);
-                }
-
-                ImGui.TableNextColumn();
-                ImGui.TextUnformatted(enemy.Omnidirectional ? "All directions" : "In front");
-
-                ImGui.TableNextColumn();
-                ImGui.TextUnformatted($"{enemy.Distance:F1}y");
-
-                ImGui.TableNextColumn();
-                ImGui.PushStyleColor(ImGuiCol.Text, UiHelpers.Dim);
-                ImGui.TextUnformatted(enemy.BaseId.ToString());
-                ImGui.PopStyleColor();
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Stop drawing and training on this mob type. Undo it in Mob Viewer.");
             }
 
             ImGui.EndTable();
         }
     }
+
+    private void DrawTrainingSection()
+    {
+        UiHelpers.SectionHeader("Training Mode");
+
+        var training = _config.AggroTrainingEnabled;
+        if (ImGui.Checkbox("Learn real ranges by watching pulls", ref training))
+        {
+            _config.AggroTrainingEnabled = training;
+            if (!training)
+                _trainer.Reset();
+            Plugin.SaveConfiguration();
+        }
+        UiHelpers.HelpMarker(
+            "Watches every nearby enemy each frame. When one pulls onto you, it records how " +
+            "far away you were and what angle you were at relative to its facing. Leave it " +
+            "off once a mob is solved — it keeps per-enemy history buffers while running.");
+
+        if (!_config.AggroTrainingEnabled)
+        {
+            UiHelpers.Muted(
+                $"Off. {_store.TotalSamples} pull(s) recorded across {_store.All.Count} mob type(s) so far.");
+            return;
+        }
+
+        UiHelpers.Colored(UiHelpers.Good,
+            $"Recording. {_trainer.SamplesThisSession} pull(s) this session, " +
+            $"{_store.TotalSamples} total across {_store.All.Count} mob type(s).");
+
+        UiHelpers.Muted(
+            "Only fresh pulls count: you must be out of combat, the mob must not already be " +
+            "fighting, and only the first pull in a one-second window is kept, so a chain of " +
+            "linked adds contributes one clean sample instead of several bad ones.");
+
+        if (!string.IsNullOrEmpty(_trainer.LastEvent))
+        {
+            ImGui.Spacing();
+            UiHelpers.Muted($"Last: {_trainer.LastEvent}");
+        }
+    }
+
+    private static void DrawLegend()
+    {
+        UiHelpers.Colored(UiHelpers.Good, "Green");
+        ImGui.SameLine();
+        ImGui.TextUnformatted("solved");
+        ImGui.SameLine();
+        UiHelpers.Colored(UiHelpers.Warn, "  Yellow");
+        ImGui.SameLine();
+        ImGui.TextUnformatted("some data");
+        ImGui.SameLine();
+        UiHelpers.Colored(UiHelpers.Bad, "  Red");
+        ImGui.SameLine();
+        ImGui.TextUnformatted("no data");
+        ImGui.Spacing();
+    }
+
+    internal static string DescribeConfidence(AggroConfidence confidence, int samples) => confidence switch
+    {
+        AggroConfidence.Confident => $"Solved ({samples})",
+        AggroConfidence.Learning  => $"Learning ({samples}/{AggroLearningStore.MinSamplesForConfident})",
+        _                         => "No data",
+    };
 }

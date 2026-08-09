@@ -21,9 +21,15 @@ public sealed class ToolRegistry : IDisposable
     {
         _config = config;
 
+        // The learned-aggro table and its capture side are shared: the vision
+        // tool feeds the trainer and reads the store, the viewer browses it.
+        var store   = new AggroLearningStore(config);
+        var trainer = new AggroTrainer(store);
+
         // Registration order is display order. Real tools first, info last.
         Register(new OccultCofferLinesTool(config));
-        Register(new EnemyVisionTool(config));
+        Register(new EnemyVisionTool(config, store, trainer));
+        Register(new MobViewerTool(config, store));
 
         Register(new CharacterInfoTool());
         Register(new EorzeaClockTool());
