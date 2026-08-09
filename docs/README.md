@@ -6,6 +6,7 @@ a doc is created.
 | Document | Covers |
 |----------|--------|
 | [architecture.md](architecture.md) | How the toolkit shell, tool registry, and windows fit together |
+| [occult-crescent.md](occult-crescent.md) | Verified game data behind the Coffer Lines tool: territory IDs, coffer SGB model ids, gating rules, and how each was checked |
 
 Project-level docs that live outside this folder:
 

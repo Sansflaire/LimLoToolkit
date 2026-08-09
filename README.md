@@ -26,6 +26,14 @@ Settings — it then disappears from the sidebar and stops running.
 
 ## Tools
 
+**Toolkit**
+
+| Tool | What it does |
+|------|--------------|
+| Coffer Lines | Draws a line from you to each nearby treasure coffer in the Occult Crescent — brown for bronze, silver for silver. Each grade toggles separately. Lines hide while you are in combat, and the tool does nothing outside South Horn and North Horn. |
+
+**Info**
+
 | Tool | What it shows |
 |------|---------------|
 | Character | Live name, world, job, level, HP/MP, zone, position, target, combat and mount state. Includes a "copy position" button. |
@@ -33,6 +41,15 @@ Settings — it then disappears from the sidebar and stops running.
 | About | Version, commands, and reload instructions. |
 
 More tools are on the way.
+
+### Credit
+
+The Coffer Lines tool reproduces a feature from
+[BOCCHI](https://github.com/OhKannaDuh/BOCCHI) by OhKannaDuh. It is an
+independent implementation — no BOCCHI code is used and BOCCHI is not required —
+but the approach and the colour choices come from there. If you want the full
+Occult Crescent automation suite, including Treasure Hunt route planning, go
+install BOCCHI; it does far more than this one panel.
 
 ## Building
 

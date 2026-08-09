@@ -17,4 +17,7 @@ the next piece of work. Move an entry out (delete it, or fold the answer into
 | # | Question | Why it matters |
 |---|----------|----------------|
 | 4 | Do any planned tools need optional IPC (Penumbra, Glamourer, vnavmesh)? | Allowed only as a graceful-degradation extra — never a hard dependency. See `CLAUDE.md` §2. |
-| 5 | Is a per-tool overlay window (drawn outside the main window) worth supporting in `ITool`? | Some tools want a HUD element rather than a panel. Would mean widening the interface. |
+| ~~5~~ | ~~Is a per-tool overlay drawn outside the main window worth supporting in `ITool`?~~ | **Answered 2026-08-09: yes.** Coffer Lines needs to draw with the window closed. `ITool.DrawOverlay` added as a defaulted no-op member; `ToolRegistry.DrawOverlay` fans it out from `Plugin.DrawUi`, outside the `WindowSystem`. |
+| 6 | Should Coffer Lines also offer "Lines to carrots" (Fortune Carrot `EventObj` BaseId `2010139`), as BOCCHI does in the same section? | It is the third checkbox in BOCCHI's radar group and a small addition. Left out because it was not in the requested screenshot. |
+| 7 | Should off-screen coffers get an edge marker instead of no line at all? | Our `WorldToScreen` renderer skips a segment whose endpoint leaves the viewport, where BOCCHI's Pictomancy clips to the screen edge. See `docs/occult-crescent.md`. |
+| 8 | Do the Occult Crescent facts survive the next patch? | Territory IDs and coffer SGB ids are patch-sensitive. Re-run the checks in `docs/occult-crescent.md` after a major patch. |

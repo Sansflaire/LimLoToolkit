@@ -21,6 +21,9 @@ public sealed class ToolRegistry : IDisposable
     {
         _config = config;
 
+        // Registration order is display order. Real tools first, info last.
+        Register(new OccultCofferLinesTool(config));
+
         Register(new CharacterInfoTool());
         Register(new EorzeaClockTool());
         Register(new AboutTool());
@@ -64,6 +67,28 @@ public sealed class ToolRegistry : IDisposable
             catch (Exception ex)
             {
                 Plugin.Log.Error(ex, $"Tool '{tool.Id}' threw during framework update.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Draws every enabled tool's in-world overlay on the UI thread, whether or
+    /// not the toolkit window is open. Isolated per tool, same as the tick.
+    /// </summary>
+    public void DrawOverlay()
+    {
+        foreach (var tool in _tools)
+        {
+            if (!_config.IsToolEnabled(tool.Id))
+                continue;
+
+            try
+            {
+                tool.DrawOverlay();
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.Error(ex, $"Tool '{tool.Id}' threw while drawing its overlay.");
             }
         }
     }

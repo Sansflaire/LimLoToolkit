@@ -26,6 +26,14 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>Per-tool enabled state, keyed by <see cref="Tools.ITool.Id"/>.</summary>
     public Dictionary<string, bool> EnabledTools { get; set; } = new();
 
+    // --- Coffer Lines (Occult Crescent) ---
+
+    /// <summary>Draw a brown line from the player to nearby bronze coffers.</summary>
+    public bool DrawLineToBronzeCoffers { get; set; } = true;
+
+    /// <summary>Draw a silver line from the player to nearby silver coffers.</summary>
+    public bool DrawLineToSilverCoffers { get; set; } = true;
+
     public bool IsToolEnabled(string id) =>
         !EnabledTools.TryGetValue(id, out var enabled) || enabled;
 

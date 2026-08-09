@@ -10,7 +10,7 @@ public sealed class AboutTool : ITool
     public string Id          => "about";
     public string Name        => "About";
     public string Description => "Version, commands, and where to find help.";
-    public string Category    => "Toolkit";
+    public string Category    => "Info";
 
     public void Draw()
     {

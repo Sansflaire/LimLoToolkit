@@ -92,28 +92,31 @@ public sealed class MainWindow : Window, IDisposable
     {
         if (ImGui.BeginChild("##limlo-sidebar", new Vector2(SidebarWidth, 0), true))
         {
-            string? lastCategory = null;
+            // GroupBy keeps categories in first-registration order and tools in
+            // registration order within each. Grouping rather than tracking the
+            // previous category means an out-of-order registration can never
+            // emit the same header twice.
+            var first = true;
 
-            foreach (var tool in enabled)
+            foreach (var category in enabled.GroupBy(t => t.Category))
             {
-                if (tool.Category != lastCategory)
+                if (!first)
+                    ImGui.Spacing();
+                first = false;
+
+                ImGui.PushStyleColor(ImGuiCol.Text, UiHelpers.Dim);
+                ImGui.TextUnformatted(category.Key.ToUpperInvariant());
+                ImGui.PopStyleColor();
+                ImGui.Separator();
+
+                foreach (var tool in category)
                 {
-                    if (lastCategory != null)
-                        ImGui.Spacing();
+                    if (ImGui.Selectable($"{tool.Name}###limlo-nav-{tool.Id}", tool.Id == selected.Id))
+                        SelectTool(tool.Id);
 
-                    ImGui.PushStyleColor(ImGuiCol.Text, UiHelpers.Dim);
-                    ImGui.TextUnformatted(tool.Category.ToUpperInvariant());
-                    ImGui.PopStyleColor();
-                    ImGui.Separator();
-
-                    lastCategory = tool.Category;
+                    if (ImGui.IsItemHovered() && !string.IsNullOrEmpty(tool.Description))
+                        ImGui.SetTooltip(tool.Description);
                 }
-
-                if (ImGui.Selectable($"{tool.Name}###limlo-nav-{tool.Id}", tool.Id == selected.Id))
-                    SelectTool(tool.Id);
-
-                if (ImGui.IsItemHovered() && !string.IsNullOrEmpty(tool.Description))
-                    ImGui.SetTooltip(tool.Description);
             }
 
             // Settings sits at the bottom of the sidebar, out of the tool flow.

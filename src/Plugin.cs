@@ -30,6 +30,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IDataManager            DataManager     { get; private set; } = null!;
     [PluginService] internal static ICondition              Condition       { get; private set; } = null!;
     [PluginService] internal static IChatGui                ChatGui         { get; private set; } = null!;
+    [PluginService] internal static IGameGui                GameGui         { get; private set; } = null!;
 
     public const string DisplayName   = "LimLo Toolkit";
     public const string CommandMain   = "/limlo";
@@ -46,6 +47,8 @@ public sealed class Plugin : IDalamudPlugin
 
     public Plugin()
     {
+        _instance = this;
+
         _config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         _tools  = new ToolRegistry(_config);
 
@@ -90,6 +93,8 @@ public sealed class Plugin : IDalamudPlugin
         _configWindow.Dispose();
         _tools.Dispose();
 
+        _instance = null;
+
         Log.Information($"{DisplayName} unloaded.");
     }
 
@@ -128,6 +133,10 @@ public sealed class Plugin : IDalamudPlugin
         try
         {
             _windows.Draw();
+
+            // In-world overlays draw whether or not the toolkit window is open,
+            // so this must sit outside the WindowSystem.
+            _tools.DrawOverlay();
         }
         catch (Exception ex)
         {
@@ -136,4 +145,12 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private void SaveConfig() => PluginInterface.SavePluginConfig(_config);
+
+    /// <summary>
+    /// Lets a tool persist its own settings without having a save callback
+    /// threaded through its constructor.
+    /// </summary>
+    public static void SaveConfiguration() => _instance?.SaveConfig();
+
+    private static Plugin? _instance;
 }
