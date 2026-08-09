@@ -24,7 +24,7 @@ public sealed class ToolRegistry : IDisposable
         // The learned-aggro table and its capture side are shared: the vision
         // tool feeds the trainer and reads the store, the viewer browses it.
         var store   = new AggroLearningStore(config);
-        var trainer = new AggroTrainer(store);
+        var trainer = new AggroTrainer(store, config);
 
         // Registration order is display order. Real tools first, info last.
         Register(new OccultCofferLinesTool(config));

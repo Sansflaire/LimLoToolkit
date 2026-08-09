@@ -61,6 +61,9 @@ public sealed class EnemyVisionTool : ITool
         public float           Radius          { get; } = radius;
         /// <summary>Hitring-to-hitring gap, i.e. what the slider and samples mean.</summary>
         public float           Gap             { get; init; }
+        /// <summary>Measured envelope, when this mob has one. Overrides the shape.</summary>
+        public AggroProfile?   Envelope        { get; init; }
+        public float           HitboxRadius    { get; init; }
         public float           ConeDegrees     { get; } = coneDegrees;
         public bool            Omnidirectional { get; } = omnidirectional;
         public bool            PlayerInside    { get; } = playerInside;
@@ -179,20 +182,44 @@ public sealed class EnemyVisionTool : ITool
                 var learnedDistance = _config.UseLearnedAggroRanges ? _store.EstimatedDistance(profile) : null;
                 var learnedCone     = _config.UseLearnedAggroRanges ? _store.EstimatedConeDegrees(profile) : null;
 
-                var gap  = learnedDistance ?? fallbackRadius;
-                var cone = learnedCone     ?? fallbackCone;
+                // Defensive clamp: a bad measurement must never be able to paint
+                // a giant circle across the world.
+                var gap  = Math.Clamp(learnedDistance ?? fallbackRadius, 0f, MaxRadius);
+                var cone = Math.Clamp(learnedCone     ?? fallbackCone, MinCone, MaxCone);
+
+                // When the mob has a measured envelope, that replaces the
+                // cone-or-circle guess entirely.
+                var envelope = profile != null && _config.UseLearnedAggroRanges
+                               && AggroLearningStore.FilledBins(profile) > 0
+                    ? profile
+                    : null;
 
                 // Measurements can contradict the sheet: a "sees only forwards"
                 // mob that pulled from behind is really omnidirectional.
                 var effectiveOmni = omnidirectional || AggroLearningStore.ContradictsSheet(profile);
 
-                var radius = gap + obj.HitboxRadius;
-                var inside = distance - playerHitbox <= radius;
+                var playerAngle = AggroLearningStore.AngleOffFacing(obj.Position, obj.Rotation, playerPos);
 
-                if (inside && !effectiveOmni && cone < 360f)
+                bool  inside;
+                float radius;
+
+                if (envelope != null)
                 {
-                    var angle = AggroLearningStore.AngleOffFacing(obj.Position, obj.Rotation, playerPos);
-                    inside = angle <= cone * 0.5f;
+                    // Measured: the reach at the angle the player actually
+                    // stands at, no assumed shape involved.
+                    var measured = Math.Clamp(
+                        AggroLearningStore.RadiusAtAngle(envelope, playerAngle) ?? gap, 0f, MaxRadius);
+
+                    radius = measured + obj.HitboxRadius;
+                    inside = distance - playerHitbox - obj.HitboxRadius <= measured;
+                }
+                else
+                {
+                    radius = gap + obj.HitboxRadius;
+                    inside = distance - playerHitbox <= radius;
+
+                    if (inside && !effectiveOmni && cone < 360f)
+                        inside = playerAngle <= cone * 0.5f;
                 }
 
                 if (inside)
@@ -209,7 +236,7 @@ public sealed class EnemyVisionTool : ITool
                     obj.BaseId,
                     distance,
                     confidence,
-                    learnedDistance.HasValue) { Gap = gap });
+                    learnedDistance.HasValue) { Gap = gap, Envelope = envelope, HitboxRadius = obj.HitboxRadius });
             }
 
             shapes.Sort((a, b) => a.Distance.CompareTo(b.Distance));
@@ -255,11 +282,64 @@ public sealed class EnemyVisionTool : ITool
                     ? DangerColor
                     : shape.Omnidirectional ? SoundColor : SightColor);
 
-            if (shape.Omnidirectional || shape.ConeDegrees >= 360f)
+            if (shape.Envelope is { } envelope)
+                DrawEnvelope(drawList, shape, envelope, colour);
+            else if (shape.Omnidirectional || shape.ConeDegrees >= 360f)
                 DrawGroundCircle(drawList, shape.Position, shape.Radius, colour);
             else
                 DrawGroundCone(drawList, shape.Position, shape.Radius, shape.Facing, shape.ConeDegrees, colour);
         }
+    }
+
+    /// <summary>
+    /// Draws the measured detection envelope: a closed loop whose reach varies
+    /// with angle, so whatever shape the data describes is what appears — a
+    /// forward lobe, an even ring, or a lobe sitting on top of a close core.
+    /// No cone-or-circle assumption anywhere.
+    /// </summary>
+    private static void DrawEnvelope(ImDrawListPtr drawList, Shape shape, AggroProfile envelope, uint colour)
+    {
+        Vector2? previous = null;
+        Vector2? first    = null;
+
+        for (var i = 0; i <= CircleSegments; i++)
+        {
+            var sweep      = i / (float)CircleSegments * MathF.Tau;
+            var worldAngle = shape.Facing + sweep;
+
+            // Fold to 0-180 off the facing; the envelope is left/right symmetric.
+            var offFacing = MathF.Abs(WrapPi(sweep)) * 180f / MathF.PI;
+
+            var reach = AggroLearningStore.RadiusAtAngle(envelope, offFacing) ?? shape.Gap;
+            var r     = Math.Clamp(reach, 0f, MaxRadius) + shape.HitboxRadius;
+
+            var point = new Vector3(
+                shape.Position.X + r * MathF.Sin(worldAngle),
+                shape.Position.Y,
+                shape.Position.Z + r * MathF.Cos(worldAngle));
+
+            if (!Plugin.GameGui.WorldToScreen(point, out var screen))
+            {
+                previous = null;
+                continue;
+            }
+
+            first ??= screen;
+
+            if (previous is { } prev)
+                drawList.AddLine(prev, screen, colour, ShapeThickness);
+
+            previous = screen;
+        }
+    }
+
+    /// <summary>Wraps an angle to -pi..pi.</summary>
+    private static float WrapPi(float radians)
+    {
+        var wrapped = radians % MathF.Tau;
+        if (wrapped > MathF.PI)  wrapped -= MathF.Tau;
+        if (wrapped < -MathF.PI) wrapped += MathF.Tau;
+        return wrapped;
     }
 
     private static void DrawGroundCircle(ImDrawListPtr drawList, Vector3 centre, float radius, uint colour)
@@ -507,23 +587,64 @@ public sealed class EnemyVisionTool : ITool
         {
             UiHelpers.Muted(
                 $"Off. {_store.TotalSamples} pull(s) recorded across {_store.All.Count} mob type(s) so far.");
+            DrawDataResetControls();
             return;
         }
 
         UiHelpers.Colored(UiHelpers.Good,
-            $"Recording. {_trainer.SamplesThisSession} pull(s) this session, " +
-            $"{_store.TotalSamples} total across {_store.All.Count} mob type(s).");
+            $"Recording. {_trainer.SamplesThisSession} kept / {_trainer.RejectedThisSession} skipped this " +
+            $"session, {_store.TotalSamples} total across {_store.All.Count} mob type(s).");
+
+        var announce = _config.AnnounceTrainingInChat;
+        if (ImGui.Checkbox("Announce every pull in chat", ref announce))
+        {
+            _config.AnnounceTrainingInChat = announce;
+            Plugin.SaveConfiguration();
+        }
+        UiHelpers.HelpMarker(
+            "Prints a line whenever a pull is recorded or skipped, with the reason. " +
+            "Leave this on while training so you can see it working without opening this panel.");
 
         UiHelpers.Muted(
-            "Only fresh pulls count: you must be out of combat, the mob must not already be " +
-            "fighting, and only the first pull in a one-second window is kept, so a chain of " +
-            "linked adds contributes one clean sample instead of several bad ones.");
+            "Only fresh pulls count: you must be OUT OF COMBAT, the mob must not already be " +
+            "fighting, and only the first pull per second is kept. So pull one mob at a time " +
+            "and disengage between pulls — running a whole train records one sample, not ten.");
 
-        if (!string.IsNullOrEmpty(_trainer.LastEvent))
+        ImGui.Spacing();
+        UiHelpers.SectionHeader("Activity");
+
+        var events = _trainer.RecentEvents;
+        if (events.Count == 0)
         {
-            ImGui.Spacing();
-            UiHelpers.Muted($"Last: {_trainer.LastEvent}");
+            UiHelpers.Muted("Nothing yet. Walk into a mob's detection range while out of combat.");
         }
+        else
+        {
+            foreach (var entry in events)
+            {
+                UiHelpers.Colored(entry.Accepted ? UiHelpers.Good : UiHelpers.Dim,
+                    (entry.Accepted ? "+ " : "- ") + entry.Message);
+            }
+        }
+
+        DrawDataResetControls();
+    }
+
+    private void DrawDataResetControls()
+    {
+        ImGui.Spacing();
+
+        if (ImGui.Button("Clear ALL training data"))
+        {
+            _store.Clear();
+            _trainer.Reset();
+            _trainer.ClearEvents();
+            Plugin.SaveConfiguration();
+        }
+        UiHelpers.HelpMarker(
+            "Wipes every measured range and cone for every mob and starts over. " +
+            "Use this if the data looks wrong — measurements persist across restarts, " +
+            "so bad samples stay until they are cleared.");
     }
 
     private static void DrawLegend()
@@ -548,4 +669,13 @@ public sealed class EnemyVisionTool : ITool
         AggroConfidence.Learning  => $"Learning ({samples}/{AggroLearningStore.MinSamplesForConfident})",
         _                         => "No data",
     };
+
+    /// <summary>Confidence plus what the mob still needs, for the viewer.</summary>
+    internal static string DescribeProgress(AggroLearningStore store, AggroProfile profile)
+    {
+        var confidence = store.ConfidenceOf(profile);
+        return confidence == AggroConfidence.None
+            ? "No data yet"
+            : $"{DescribeConfidence(confidence, profile.Distances.Count)} — {AggroLearningStore.WhatIsMissing(profile)}";
+    }
 }

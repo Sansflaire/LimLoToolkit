@@ -254,7 +254,7 @@ public sealed class MobViewerTool : ITool
         else
             UiHelpers.Colored(
                 UiHelpers.ConfidenceColor(confidence),
-                EnemyVisionTool.DescribeConfidence(confidence, profile.Distances.Count));
+                EnemyVisionTool.DescribeProgress(_store, profile));
 
         ImGui.Spacing();
 
@@ -309,6 +309,54 @@ public sealed class MobViewerTool : ITool
 
             ImGui.EndTable();
         }
+
+        ImGui.Spacing();
+        UiHelpers.SectionHeader("Measured Envelope");
+
+        UiHelpers.Muted(
+            "Furthest pull recorded in each slice around the mob's facing. 0° is dead ahead, " +
+            "180° is directly behind. This is the shape as observed — it is not forced to be a " +
+            "cone or a circle, so a mob with a close all-round core and a longer forward reach " +
+            "shows up as exactly that.");
+
+        ImGui.Spacing();
+        UiHelpers.Colored(UiHelpers.Accent, AggroLearningStore.DescribeMeasuredShape(profile));
+        ImGui.Spacing();
+
+        AggroLearningStore.EnsureBins(profile);
+
+        if (ImGui.BeginTable("##limlo-envelope", 3, ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.RowBg))
+        {
+            ImGui.TableSetupColumn("Angle");
+            ImGui.TableSetupColumn("Reach");
+            ImGui.TableSetupColumn("Pulls");
+            ImGui.TableHeadersRow();
+
+            for (var bin = 0; bin < AggroLearningStore.AngleBins; bin++)
+            {
+                var samples = profile.BinSamples[bin];
+
+                ImGui.TableNextRow();
+
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(AggroLearningStore.BinLabel(bin));
+
+                ImGui.TableNextColumn();
+                if (samples > 0)
+                    UiHelpers.Colored(UiHelpers.Good, $"{profile.BinMaxDistance[bin]:F1}y");
+                else
+                    UiHelpers.Colored(UiHelpers.Bad, "no data");
+
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(samples.ToString());
+            }
+
+            ImGui.EndTable();
+        }
+
+        UiHelpers.Muted(
+            $"{AggroLearningStore.FilledBins(profile)} of {AggroLearningStore.AngleBins} slices covered " +
+            $"({AggroLearningStore.MinFilledBins} needed). Walk in from the sides and from behind to fill the gaps.");
 
         ImGui.Spacing();
         UiHelpers.SectionHeader("Observed");

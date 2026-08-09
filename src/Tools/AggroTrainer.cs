@@ -52,10 +52,17 @@ public sealed class AggroTrainer
     /// <summary>Only the first pull in this window is recorded.</summary>
     private const long BurstWindowMs = 1000;
 
-    /// <summary>Samples beyond this are nonsense and get dropped.</summary>
-    private const float MaxPlausibleDistance = 50f;
+    /// <summary>
+    /// Samples beyond this are nonsense and get dropped. Real FFXIV aggro is
+    /// well inside 25y; anything larger is a mob that was already chasing us,
+    /// not a fresh detection.
+    /// </summary>
+    private const float MaxPlausibleDistance = AggroLearningStore.MaxPlausibleSampleDistance;
 
     private const long HistoryWindowMs = 600;
+
+    /// <summary>Entries kept in the visible activity log.</summary>
+    private const int MaxLoggedEvents = 8;
 
     private readonly struct Snapshot(long tick, Vector3 position, float rotation)
     {
@@ -64,7 +71,16 @@ public sealed class AggroTrainer
         public float   Rotation { get; } = rotation;
     }
 
+    /// <summary>One line of training activity, accepted or rejected.</summary>
+    public readonly struct TrainingEvent(string message, bool accepted)
+    {
+        public string Message  { get; } = message;
+        public bool   Accepted { get; } = accepted;
+    }
+
     private readonly AggroLearningStore _store;
+    private readonly Configuration      _config;
+    private readonly List<TrainingEvent> _events = new();
 
     private readonly List<Snapshot>                   _playerHistory = new();
     private readonly Dictionary<ulong, List<Snapshot>> _enemyHistory  = new();
@@ -74,12 +90,20 @@ public sealed class AggroTrainer
     private bool _playerWasInCombat;
     private long _lastSampleAt;
 
-    public AggroTrainer(AggroLearningStore store) => _store = store;
+    public AggroTrainer(AggroLearningStore store, Configuration config)
+    {
+        _store  = store;
+        _config = config;
+    }
 
     /// <summary>Samples recorded since the plugin loaded, for the UI.</summary>
     public int SamplesThisSession { get; private set; }
 
-    public string LastEvent { get; private set; } = string.Empty;
+    /// <summary>Pulls seen but rejected this session, for the UI.</summary>
+    public int RejectedThisSession { get; private set; }
+
+    /// <summary>Most recent activity, newest first.</summary>
+    public IReadOnlyList<TrainingEvent> RecentEvents => _events;
 
     /// <summary>Drops all transient history. Called when training is switched off.</summary>
     public void Reset()
@@ -89,6 +113,38 @@ public sealed class AggroTrainer
         _wasTargetingMe.Clear();
         _wasInCombat.Clear();
         _playerWasInCombat = false;
+    }
+
+    public void ClearEvents() => _events.Clear();
+
+    /// <summary>
+    /// Records one line of activity and, when enabled, echoes it to chat so a
+    /// pull is visible without the toolkit window being open on this panel.
+    /// </summary>
+    private void Log(string message, bool accepted)
+    {
+        if (accepted)
+            SamplesThisSession++;
+        else
+            RejectedThisSession++;
+
+        _events.Insert(0, new TrainingEvent(message, accepted));
+        while (_events.Count > MaxLoggedEvents)
+            _events.RemoveAt(_events.Count - 1);
+
+        if (_config.AnnounceTrainingInChat)
+        {
+            try
+            {
+                Plugin.ChatGui.Print($"[LimLo] {(accepted ? "Recorded" : "Skipped")}: {message}");
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.Error(ex, "Failed to print a training message to chat.");
+            }
+        }
+
+        Plugin.Log.Debug($"[AggroTrainer] {(accepted ? "REC" : "SKIP")} {message}");
     }
 
     /// <summary>
@@ -125,8 +181,21 @@ public sealed class AggroTrainer
             var wasTargeting = _wasTargetingMe.TryGetValue(id, out var prevTarget) && prevTarget;
             var wasFighting  = _wasInCombat.TryGetValue(id, out var prevCombat) && prevCombat;
 
+            // We must have been watching this mob long enough to have real
+            // pre-aggro geometry. Without this check, the first frame a mob
+            // appears counts as a pull — so anything already chasing us gets
+            // recorded at whatever range it walked in at, and a plugin reload
+            // (which wipes the tables below) poisons every mob on screen at
+            // once. That was the "ranges are suddenly enormous" bug.
+            var watchedLongEnough = history.Count > 0 && now - history[0].Tick >= RotationLookbackMs;
+
             if (targetingMe && !wasTargeting)
-                TryRecord(tracked, history, playerHitbox, playerInCombat, wasFighting, territoryId, now);
+            {
+                if (watchedLongEnough)
+                    TryRecord(tracked, history, playerHitbox, playerInCombat, wasFighting, territoryId, now);
+                else
+                    Log($"Ignored {tracked.Name}: it was already chasing you when it came into view.", false);
+            }
 
             _wasTargetingMe[id] = targetingMe;
             _wasInCombat[id]    = tracked.InCombat;
@@ -165,13 +234,13 @@ public sealed class AggroTrainer
         // the pull itself flips the player into combat on the very same frame.
         if (_playerWasInCombat || enemyWasInCombat)
         {
-            LastEvent = $"Skipped {tracked.Name}: already in combat (link or target switch).";
+            Log($"{tracked.Name} — you were already in combat, so this is a link or a target switch, not a detection.", false);
             return;
         }
 
         if (now - _lastSampleAt < BurstWindowMs)
         {
-            LastEvent = $"Skipped {tracked.Name}: within {BurstWindowMs} ms of the last pull.";
+            Log($"{tracked.Name} — arrived within a second of the last pull, treated as an add.", false);
             return;
         }
 
@@ -186,7 +255,7 @@ public sealed class AggroTrainer
 
         if (gap < 0f || gap > MaxPlausibleDistance)
         {
-            LastEvent = $"Skipped {tracked.Name}: implausible gap of {gap:F1}y.";
+            Log($"{tracked.Name} — {gap:F1}y is too far to be a real detection, discarded.", false);
             return;
         }
 
@@ -217,13 +286,17 @@ public sealed class AggroTrainer
             angle);
 
         _lastSampleAt = now;
-        SamplesThisSession++;
 
-        LastEvent = angle is { } recorded
-            ? $"{tracked.Name}: pulled at {gap:F1}y, {recorded:F0} degrees off its facing."
-            : $"{tracked.Name}: pulled at {gap:F1}y (it was turning, angle discarded).";
+        var profile = _store.Find(tracked.BaseId);
+        var count   = profile?.Distances.Count ?? 1;
+        var solved  = _store.ConfidenceOf(profile) == AggroConfidence.Confident;
 
-        Plugin.Log.Debug($"Aggro sample: {tracked.Name} ({tracked.BaseId}) gap={gap:F2} angle={angle?.ToString("F1") ?? "n/a"}");
+        var detail = angle is { } recorded
+            ? $"{gap:F1}y at {recorded:F0}° off its facing"
+            : $"{gap:F1}y (it was turning, angle discarded)";
+
+        Log($"{tracked.Name} — {detail}. Sample {count}/{AggroLearningStore.MinSamplesForConfident}"
+            + (solved ? ", SOLVED." : "."), true);
     }
 
     private static void Append(List<Snapshot> history, Snapshot snapshot, long now)

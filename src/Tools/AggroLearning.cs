@@ -45,6 +45,28 @@ public sealed class AggroProfile
     /// <summary>Largest gap seen, and how many samples since it last grew.</summary>
     public float MaxDistance        { get; set; }
     public int   SamplesSinceMaxGrew { get; set; }
+
+    /// <summary>
+    /// Same idea for the cone. Tracked separately because the two converge at
+    /// very different rates: range settles from any approach, but the cone only
+    /// grows when you happen to approach from a wide angle.
+    /// </summary>
+    public float MaxAngle             { get; set; }
+    public int   SamplesSinceAngleGrew { get; set; }
+
+    /// <summary>
+    /// The detection envelope: furthest pull seen in each angular slice around
+    /// the mob's facing, and how many samples landed in each.
+    ///
+    /// This is what lets the shape emerge from data instead of being assumed.
+    /// A pure sight mob fills the front bins and leaves the rear ones short; a
+    /// pure sound mob fills every bin equally; a mob with BOTH a short
+    /// all-directions core and a longer forward lobe — which is what several
+    /// of these actually look like — produces exactly that profile, and no
+    /// cone-or-circle model could represent it.
+    /// </summary>
+    public List<float> BinMaxDistance { get; set; } = new();
+    public List<int>   BinSamples     { get; set; } = new();
 }
 
 /// <summary>
@@ -69,6 +91,14 @@ public sealed class AggroLearningStore
     /// <summary>A new max must beat the old by this much to count as growth.</summary>
     private const float GrowthEpsilon = 0.25f;
 
+    /// <summary>Angle samples needed before a cone can be called solved.</summary>
+    public const int MinAngleSamplesForConfident = 6;
+
+    /// <summary>Consecutive angle samples that must fail to widen the cone.</summary>
+    public const int StableAngleSamplesForConfident = 3;
+
+    private const float AngleGrowthEpsilon = 4f;
+
     /// <summary>Keep the table bounded; a mob needs nowhere near this many.</summary>
     private const int MaxSamplesPerMob = 100;
 
@@ -77,6 +107,72 @@ public sealed class AggroLearningStore
 
     /// <summary>Beyond this, a "sees only forwards" mob is contradicting the sheet.</summary>
     public const float RearPullAngleDegrees = 100f;
+
+    /// <summary>
+    /// Angular slices of the detection envelope, over 0-180 degrees off the
+    /// mob's facing. Detection is symmetric left/right, so folding to an
+    /// absolute angle halves how much walking is needed to fill the profile.
+    /// </summary>
+    public const int   AngleBins       = 12;
+    public const float BinWidthDegrees = 180f / AngleBins;
+
+    /// <summary>Filled slices needed before the envelope is trustworthy.</summary>
+    public const int MinFilledBins = 6;
+
+    public static int BinFor(float angleDegrees) =>
+        Math.Clamp((int)(angleDegrees / BinWidthDegrees), 0, AngleBins - 1);
+
+    public static string BinLabel(int bin) =>
+        $"{bin * BinWidthDegrees:F0}-{(bin + 1) * BinWidthDegrees:F0}°";
+
+    /// <summary>Old configs predate the bins; make sure they are the right size.</summary>
+    public static void EnsureBins(AggroProfile profile)
+    {
+        while (profile.BinMaxDistance.Count < AngleBins) profile.BinMaxDistance.Add(0f);
+        while (profile.BinSamples.Count     < AngleBins) profile.BinSamples.Add(0);
+    }
+
+    public static int FilledBins(AggroProfile profile)
+    {
+        EnsureBins(profile);
+
+        var filled = 0;
+        for (var i = 0; i < AngleBins; i++)
+            if (profile.BinSamples[i] > 0)
+                filled++;
+
+        return filled;
+    }
+
+    /// <summary>
+    /// Measured detection distance at a given angle off the mob's facing.
+    /// Falls back to the nearest slice that does have data, so a partly-filled
+    /// envelope still draws something sensible rather than collapsing to zero.
+    /// Returns null when the mob has no angular data at all.
+    /// </summary>
+    public static float? RadiusAtAngle(AggroProfile profile, float angleDegrees)
+    {
+        EnsureBins(profile);
+
+        var bin = BinFor(Math.Clamp(angleDegrees, 0f, 180f));
+        if (profile.BinSamples[bin] > 0)
+            return profile.BinMaxDistance[bin];
+
+        // Walk outwards to the closest filled slice on either side.
+        for (var offset = 1; offset < AngleBins; offset++)
+        {
+            var low  = bin - offset;
+            var high = bin + offset;
+
+            if (low >= 0 && profile.BinSamples[low] > 0)
+                return profile.BinMaxDistance[low];
+
+            if (high < AngleBins && profile.BinSamples[high] > 0)
+                return profile.BinMaxDistance[high];
+        }
+
+        return null;
+    }
 
     private readonly Configuration _config;
     private readonly Dictionary<uint, AggroProfile> _byBaseId = new();
@@ -93,6 +189,50 @@ public sealed class AggroLearningStore
 
         foreach (var baseId in _config.IgnoredMobBaseIds)
             _ignored.Add(baseId);
+
+        PurgeImplausibleProfiles();
+    }
+
+    /// <summary>Samples past this are not real detections. Shared with the trainer.</summary>
+    public const float MaxPlausibleSampleDistance = 25f;
+
+    /// <summary>
+    /// Heals data recorded before the first-sight guard existed. A plugin reload
+    /// used to wipe the trainer's "was this mob targeting me" table, so on the
+    /// next frame every mob already chasing the player looked like a fresh pull
+    /// and got recorded at whatever range it walked in at — 40y and up. Those
+    /// profiles paint enormous shapes and survive restarts, so any profile
+    /// holding an impossible sample is reset rather than left to mislead.
+    ///
+    /// A whole-profile reset rather than dropping the bad samples: the angular
+    /// bins keep maxima only, so a poisoned bin cannot be unmixed.
+    /// </summary>
+    private void PurgeImplausibleProfiles()
+    {
+        var purged = 0;
+
+        foreach (var profile in _byBaseId.Values)
+        {
+            var bad = profile.Distances.Any(d => d > MaxPlausibleSampleDistance)
+                      || profile.BinMaxDistance.Any(d => d > MaxPlausibleSampleDistance);
+
+            if (!bad)
+                continue;
+
+            profile.Distances.Clear();
+            profile.Angles.Clear();
+            profile.BinMaxDistance.Clear();
+            profile.BinSamples.Clear();
+            profile.MaxDistance           = 0f;
+            profile.SamplesSinceMaxGrew   = 0;
+            profile.MaxAngle              = 0f;
+            profile.SamplesSinceAngleGrew = 0;
+            profile.RearPulls             = 0;
+            purged++;
+        }
+
+        if (purged > 0)
+            Plugin.Log.Warning($"Reset {purged} aggro profile(s) holding impossible samples (>{MaxPlausibleSampleDistance}y).");
     }
 
     // ── Ignore list ──────────────────────────────────────────────────────────
@@ -193,20 +333,120 @@ public sealed class AggroLearningStore
             if (profile.Angles.Count > MaxSamplesPerMob)
                 profile.Angles.RemoveAt(0);
 
+            // Fold the sample into the angular envelope.
+            EnsureBins(profile);
+            var bin = BinFor(angle);
+            profile.BinSamples[bin]++;
+            if (distance > profile.BinMaxDistance[bin])
+                profile.BinMaxDistance[bin] = distance;
+
+            if (angle > profile.MaxAngle + AngleGrowthEpsilon)
+            {
+                profile.MaxAngle              = angle;
+                profile.SamplesSinceAngleGrew = 0;
+            }
+            else
+            {
+                profile.MaxAngle = MathF.Max(profile.MaxAngle, angle);
+                profile.SamplesSinceAngleGrew++;
+            }
+
             if (!sheetOmnidirectional && angle > RearPullAngleDegrees)
                 profile.RearPulls++;
         }
     }
 
+    /// <summary>Is the RANGE settled? Converges from any approach.</summary>
+    public static bool RangeSolved(AggroProfile profile) =>
+        profile.Distances.Count >= MinSamplesForConfident
+        && profile.SamplesSinceMaxGrew >= StableSamplesForConfident;
+
+    /// <summary>
+    /// Is the SHAPE settled? This no longer trusts the sheet's sight/sound flag
+    /// as a shortcut — a mob the sheet calls forward-only can still have an
+    /// all-directions core, and a mob it calls omnidirectional can still reach
+    /// further forwards. The only way to know is to have walked in from enough
+    /// different angles, so the test is envelope coverage.
+    /// </summary>
+    public static bool ShapeSolved(AggroProfile profile) =>
+        FilledBins(profile) >= MinFilledBins
+        && profile.Angles.Count >= MinAngleSamplesForConfident
+        && profile.SamplesSinceAngleGrew >= StableAngleSamplesForConfident;
+
+    /// <summary>Green only when both halves are settled.</summary>
     public AggroConfidence ConfidenceOf(AggroProfile? profile)
     {
         if (profile == null || profile.Distances.Count == 0)
             return AggroConfidence.None;
 
-        return profile.Distances.Count >= MinSamplesForConfident
-               && profile.SamplesSinceMaxGrew >= StableSamplesForConfident
+        return RangeSolved(profile) && ShapeSolved(profile)
             ? AggroConfidence.Confident
             : AggroConfidence.Learning;
+    }
+
+    /// <summary>Short human explanation of what a mob still needs.</summary>
+    public static string WhatIsMissing(AggroProfile profile)
+    {
+        var rangeOk = RangeSolved(profile);
+        var shapeOk = ShapeSolved(profile);
+
+        if (rangeOk && shapeOk)
+            return "solved";
+
+        var filled = FilledBins(profile);
+
+        if (!rangeOk && !shapeOk)
+            return $"needs more pulls ({profile.Distances.Count}/{MinSamplesForConfident}) "
+                   + $"and more approach angles ({filled}/{MinFilledBins} covered)";
+
+        if (!rangeOk)
+            return $"needs more pulls ({profile.Distances.Count}/{MinSamplesForConfident})";
+
+        return $"needs approaches from more angles ({filled}/{MinFilledBins} covered)";
+    }
+
+    /// <summary>
+    /// How the measured envelope actually behaves, in plain words. This is the
+    /// answer to "is it sight or sound" for this specific mob, derived from
+    /// what happened rather than from the sheet.
+    /// </summary>
+    public static string DescribeMeasuredShape(AggroProfile profile)
+    {
+        EnsureBins(profile);
+
+        if (FilledBins(profile) < 3)
+            return "not enough angles measured yet";
+
+        float front = 0f, rear = 0f;
+        var frontBins = 0; var rearBins = 0;
+
+        for (var i = 0; i < AngleBins; i++)
+        {
+            if (profile.BinSamples[i] == 0)
+                continue;
+
+            // Front third versus rear third of the sweep.
+            if (i < AngleBins / 3)      { front += profile.BinMaxDistance[i]; frontBins++; }
+            else if (i >= AngleBins * 2 / 3) { rear += profile.BinMaxDistance[i];  rearBins++;  }
+        }
+
+        if (frontBins == 0 || rearBins == 0)
+            return "front and rear not both measured yet";
+
+        front /= frontBins;
+        rear  /= rearBins;
+
+        if (rear <= 0.1f)
+            return $"forward only — {front:F1}y ahead, nothing behind";
+
+        var ratio = front / MathF.Max(rear, 0.1f);
+
+        return ratio switch
+        {
+            < 1.25f => $"all directions — about {front:F1}y everywhere",
+            < 2.0f  => $"mostly even — {front:F1}y ahead, {rear:F1}y behind",
+            _       => $"forward lobe plus a close core — {front:F1}y ahead, {rear:F1}y behind",
+        };
     }
 
     /// <summary>

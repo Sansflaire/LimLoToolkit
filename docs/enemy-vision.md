@@ -116,19 +116,68 @@ because it was already fighting. All three would poison the data:
   adds contributes one clean sample instead of five bad ones
 - the gap must be within 0–50 y, or it is discarded as nonsense
 
+### The envelope: no assumed shape
+
+Early versions modelled detection as *either* a cone *or* a circle, because
+that is what `IsOmnidirectional` implies. Observed behaviour says that is too
+crude: some forward-only mobs still pull when you are close from any direction,
+and some all-direction mobs reach further ahead than behind. A mob with **both**
+a short all-round core and a longer forward lobe cannot be drawn as either
+primitive.
+
+So the model stopped presupposing a shape. Each mob keeps a **detection
+envelope**: the furthest pull recorded in each of **12 angular slices** across
+0–180° off its facing (folded left/right, since detection is symmetric, which
+halves the walking needed to fill it). The drawn outline is that envelope, and
+the "can it see me" test reads the reach at the angle the player is actually
+standing at.
+
+The shape then emerges from data:
+
+| Measured profile | What it means |
+|------------------|---------------|
+| Front slices long, rear slices short or empty | Classic sight mob |
+| Every slice about equal | Classic sound mob |
+| Rear slices short but non-zero, front much longer | Forward lobe on a close core |
+
+`IsOmnidirectional` is still read, but it is now only the *prior* used to draw
+something sensible before any data exists. Measurements override it.
+
 ### Turning samples into numbers
 
 | Quantity | Rule |
 |----------|------|
 | Range | 90th percentile once there are ≥10 samples, plain maximum before that |
-| Cone | (widest observed angle + 10° margin) × 2, since the cone is symmetric |
-| Confidence | **Green/solved** at ≥8 samples *and* ≥4 consecutive samples that did not grow the maximum. **Amber** with any samples. **Red** with none. |
+| Reach at an angle | Maximum recorded in that slice; falls back to the nearest slice that has data |
+| Confidence | **Green** needs range solved *and* shape solved. **Amber** with any samples. **Red** with none. |
+| Range solved | ≥8 samples *and* ≥4 consecutive samples that did not grow the maximum |
+| Shape solved | ≥6 of 12 slices covered, ≥6 angle samples, and ≥3 consecutive that did not widen it |
 
-The "stopped growing" half of the green condition is the important one: a plain
-sample count would call a mob solved while its measured range was still
-climbing.
+Range and shape are scored separately on purpose, because they converge at very
+different rates. Range settles from any approach. The envelope only fills where
+you actually walk in from — approach head-on every time and the front slice is
+solid while the other eleven stay empty. A single counter would call that mob
+solved when its shape was entirely unknown.
+
+The "stopped growing" halves matter for the same reason: a plain sample count
+would call a mob solved while its measured reach was still climbing.
 
 All measurements are hitring-to-hitring gaps, matching what the slider means.
+
+### Sanity bound and self-healing
+
+Samples beyond **25 y** are rejected as impossible — real aggro is well inside
+that. Any stored profile containing a sample past that bound is reset on load,
+because such data could only have come from the first-sight bug described below,
+and it survives restarts otherwise.
+
+> **Fixed bug, worth remembering.** The trainer's "was this mob targeting me
+> last frame" table is transient. A plugin reload wiped it, so on the next frame
+> every mob already chasing the player looked like a brand-new pull and was
+> recorded at whatever range it happened to be — often 40 y+. The result was
+> enormous shapes that reappeared after every rebuild. The fix: a mob must have
+> been under observation for at least the rotation lookback window before any
+> pull from it counts, so anything that arrives already aggroed is ignored.
 
 ### It also verifies the sight/sound flag
 

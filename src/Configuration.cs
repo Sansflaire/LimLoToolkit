@@ -82,6 +82,13 @@ public sealed class Configuration : IPluginConfiguration
     public bool UseLearnedAggroRanges { get; set; } = true;
 
     /// <summary>
+    /// Echo every training decision to chat. On by default while training,
+    /// because otherwise there is no way to tell whether a pull was recorded
+    /// without staring at the panel.
+    /// </summary>
+    public bool AnnounceTrainingInChat { get; set; } = true;
+
+    /// <summary>
     /// Everything measured so far, one entry per mob type. A plain list rather
     /// than a dictionary so it round-trips through config serialization without
     /// depending on non-string dictionary key support.
