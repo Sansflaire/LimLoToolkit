@@ -157,9 +157,10 @@ public sealed class EnemyVisionTool : ITool
                 if (distance > RenderDistance)
                     continue;
 
-                // Marked irrelevant: no shape, no training sample, no row.
-                if (_store.IsIgnored(obj.BaseId))
-                    continue;
+                // Marked irrelevant. Still handed to the trainer so a pull from
+                // it is reported rather than vanishing — silence here is
+                // indistinguishable from the trainer being broken.
+                var ignored = _store.IsIgnored(obj.BaseId);
 
                 var omnidirectional = _bnpcSheet?.GetRowOrDefault(obj.BaseId)?.IsOmnidirectional ?? false;
                 var name            = obj.Name.ToString();
@@ -173,7 +174,11 @@ public sealed class EnemyVisionTool : ITool
                     battleNpc.Level,
                     battleNpc.MaxHp,
                     obj.HitboxRadius,
-                    distance));
+                    distance) { Ignored = ignored });
+
+                // Ignored mobs are tracked for logging only — no shape.
+                if (ignored)
+                    continue;
 
                 // Measured numbers win over the slider when we have them.
                 var profile    = _store.Find(obj.BaseId);
@@ -595,6 +600,9 @@ public sealed class EnemyVisionTool : ITool
             $"Recording. {_trainer.SamplesThisSession} kept / {_trainer.RejectedThisSession} skipped this " +
             $"session, {_store.TotalSamples} total across {_store.All.Count} mob type(s).");
 
+        UiHelpers.Muted(
+            $"Saved to aggro-training.json (plus a .bak) the moment each pull lands. Last write: {_store.LastSavedAt}.");
+
         var announce = _config.AnnounceTrainingInChat;
         if (ImGui.Checkbox("Announce every pull in chat", ref announce))
         {
@@ -645,6 +653,20 @@ public sealed class EnemyVisionTool : ITool
             "Wipes every measured range and cone for every mob and starts over. " +
             "Use this if the data looks wrong — measurements persist across restarts, " +
             "so bad samples stay until they are cleared.");
+
+        if (_store.IgnoredCount == 0)
+            return;
+
+        ImGui.SameLine();
+        if (ImGui.Button($"Un-ignore all ({_store.IgnoredCount})"))
+        {
+            _store.ClearIgnored();
+            Plugin.SaveConfiguration();
+        }
+        UiHelpers.HelpMarker(
+            "Ignored mobs are never trained on. If a pull seems to go unrecorded, an " +
+            "over-eager ignore list is the first thing to check — pulls from ignored mobs " +
+            "now say so explicitly instead of passing in silence.");
     }
 
     private static void DrawLegend()

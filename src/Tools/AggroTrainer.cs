@@ -144,7 +144,9 @@ public sealed class AggroTrainer
             }
         }
 
-        Plugin.Log.Debug($"[AggroTrainer] {(accepted ? "REC" : "SKIP")} {message}");
+        // Information, not Debug: Dalamud's log filters Debug out by default,
+        // which made "is it even running?" impossible to answer from the log.
+        Plugin.Log.Information($"[AggroTrainer] {(accepted ? "REC" : "SKIP")} {message}");
     }
 
     /// <summary>
@@ -157,9 +159,14 @@ public sealed class AggroTrainer
 
         Append(_playerHistory, new Snapshot(now, player.Position, player.Rotation), now);
 
-        var playerId       = player.GameObjectId;
-        var playerHitbox   = player.HitboxRadius;
-        var playerInCombat = Plugin.Condition[ConditionFlag.InCombat];
+        // Match on both id forms. A mob's TargetObjectId is not guaranteed to
+        // be expressed the same way as the local player's GameObjectId, and if
+        // it is not, a single comparison silently never fires and NOTHING is
+        // ever recorded — with no error to show for it.
+        var playerGameObjectId = player.GameObjectId;
+        var playerEntityId     = (ulong)player.EntityId;
+        var playerHitbox       = player.HitboxRadius;
+        var playerInCombat     = Plugin.Condition[ConditionFlag.InCombat];
 
         var seen = new HashSet<ulong>();
 
@@ -177,9 +184,16 @@ public sealed class AggroTrainer
 
             Append(history, new Snapshot(now, enemy.Position, enemy.Rotation), now);
 
-            var targetingMe = enemy.TargetObjectId == playerId;
+            var targetingMe = enemy.TargetObjectId == playerGameObjectId
+                              || enemy.TargetObjectId == playerEntityId;
+
             var wasTargeting = _wasTargetingMe.TryGetValue(id, out var prevTarget) && prevTarget;
             var wasFighting  = _wasInCombat.TryGetValue(id, out var prevCombat) && prevCombat;
+
+            // Secondary signal. If the target id comparison ever fails us, a mob
+            // flipping into combat while we were peaceful is still a pull.
+            var justEnteredCombat = tracked.InCombat && !wasFighting && !playerInCombat;
+            var pulled            = (targetingMe && !wasTargeting) || justEnteredCombat;
 
             // We must have been watching this mob long enough to have real
             // pre-aggro geometry. Without this check, the first frame a mob
@@ -189,12 +203,23 @@ public sealed class AggroTrainer
             // once. That was the "ranges are suddenly enormous" bug.
             var watchedLongEnough = history.Count > 0 && now - history[0].Tick >= RotationLookbackMs;
 
-            if (targetingMe && !wasTargeting)
+            if (pulled)
             {
-                if (watchedLongEnough)
-                    TryRecord(tracked, history, playerHitbox, playerInCombat, wasFighting, territoryId, now);
+                if (tracked.Ignored)
+                {
+                    // Never swallow this silently. A mob on the ignore list
+                    // dropping its pull with no message looks identical to the
+                    // trainer being broken.
+                    Log($"{tracked.Name} pulled, but it is on your ignore list — not recorded.", false);
+                }
+                else if (!watchedLongEnough)
+                {
+                    Log($"{tracked.Name} — it was already chasing you when it came into view, not a clean pull.", false);
+                }
                 else
-                    Log($"Ignored {tracked.Name}: it was already chasing you when it came into view.", false);
+                {
+                    TryRecord(tracked, history, playerHitbox, playerInCombat, wasFighting, territoryId, now);
+                }
             }
 
             _wasTargetingMe[id] = targetingMe;
@@ -287,6 +312,10 @@ public sealed class AggroTrainer
 
         _lastSampleAt = now;
 
+        // Write to disk NOW. Measurements are expensive to gather and a reload
+        // must never be able to discard them.
+        _store.Save();
+
         var profile = _store.Find(tracked.BaseId);
         var count   = profile?.Distances.Count ?? 1;
         var solved  = _store.ConfidenceOf(profile) == AggroConfidence.Confident;
@@ -354,6 +383,8 @@ public readonly struct TrackedEnemy(
 {
     public IGameObject Object               { get; } = obj;
     public uint        BaseId               { get; } = baseId;
+    /// <summary>On the user's ignore list: tracked for logging, never recorded.</summary>
+    public bool        Ignored              { get; init; }
     public string      Name                 { get; } = name;
     public bool        SheetOmnidirectional { get; } = sheetOmnidirectional;
     public bool        InCombat             { get; } = inCombat;

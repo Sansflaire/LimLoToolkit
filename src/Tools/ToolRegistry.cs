@@ -17,14 +17,19 @@ public sealed class ToolRegistry : IDisposable
     private readonly List<ITool> _tools = new();
     private readonly Configuration _config;
 
+    /// <summary>Held so training data can be flushed on unload.</summary>
+    private readonly AggroLearningStore _aggroStore;
+
     public ToolRegistry(Configuration config)
     {
         _config = config;
 
         // The learned-aggro table and its capture side are shared: the vision
         // tool feeds the trainer and reads the store, the viewer browses it.
-        var store   = new AggroLearningStore(config);
+        var store   = new AggroLearningStore(config, Plugin.PluginInterface.GetPluginConfigDirectory());
         var trainer = new AggroTrainer(store, config);
+
+        _aggroStore = store;
 
         // Registration order is display order. Real tools first, info last.
         Register(new OccultCofferLinesTool(config));
@@ -102,6 +107,17 @@ public sealed class ToolRegistry : IDisposable
 
     public void Dispose()
     {
+        // Belt and braces: samples are already written as they land, but a
+        // reload must never be the thing that loses measurements.
+        try
+        {
+            _aggroStore.Save();
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Error(ex, "Failed to flush aggro training data on unload.");
+        }
+
         foreach (var tool in _tools)
         {
             try

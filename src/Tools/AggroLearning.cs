@@ -1,9 +1,21 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Numerics;
 
+using Newtonsoft.Json;
+
 namespace LimLoToolkit.Tools;
+
+/// <summary>On-disk shape of the training data file.</summary>
+[Serializable]
+public sealed class AggroDataFile
+{
+    public int                Version  { get; set; } = 1;
+    public string             SavedAt  { get; set; } = string.Empty;
+    public List<AggroProfile> Profiles { get; set; } = new();
+}
 
 /// <summary>How much we trust a mob's measured numbers.</summary>
 public enum AggroConfidence
@@ -178,19 +190,134 @@ public sealed class AggroLearningStore
     private readonly Dictionary<uint, AggroProfile> _byBaseId = new();
     private readonly HashSet<uint> _ignored = new();
 
-    public AggroLearningStore(Configuration config)
-    {
-        _config = config;
+    /// <summary>
+    /// Training data lives in its OWN file, not in the plugin config.
+    ///
+    /// It used to live in the config object, which was only ever written when
+    /// the user happened to toggle a checkbox — so a plugin reload silently
+    /// discarded every sample collected since the last toggle. Measurements are
+    /// expensive to gather (one clean pull at a time) and must never depend on
+    /// something unrelated deciding to save.
+    ///
+    /// Writes are atomic: serialize to .tmp, keep the previous file as .bak,
+    /// then move into place. A crash mid-write can therefore cost at most the
+    /// newest sample, never the whole table.
+    /// </summary>
+    private readonly string _filePath;
+    private readonly string _backupPath;
 
-        // The config stores a plain list (bulletproof to serialize); the
-        // dictionary is just an index over the very same instances.
-        foreach (var profile in _config.LearnedAggro)
-            _byBaseId[profile.BaseId] = profile;
+    public AggroLearningStore(Configuration config, string directory)
+    {
+        _config     = config;
+        _filePath   = Path.Combine(directory, "aggro-training.json");
+        _backupPath = Path.Combine(directory, "aggro-training.bak.json");
+
+        LoadFromDisk();
+        MigrateFromConfig();
 
         foreach (var baseId in _config.IgnoredMobBaseIds)
             _ignored.Add(baseId);
 
         PurgeImplausibleProfiles();
+
+        // Write once on startup if the file is missing, so the storage path is
+        // proven working before any measurement depends on it — rather than
+        // discovering it was broken after losing a session's data.
+        if (!File.Exists(_filePath))
+            Save();
+    }
+
+    public string FilePath => _filePath;
+
+    /// <summary>When the table was last written, for the UI to show.</summary>
+    public string LastSavedAt { get; private set; } = "never";
+
+    private void LoadFromDisk()
+    {
+        foreach (var path in new[] { _filePath, _backupPath })
+        {
+            try
+            {
+                if (!File.Exists(path))
+                    continue;
+
+                var data = JsonConvert.DeserializeObject<AggroDataFile>(File.ReadAllText(path));
+                if (data?.Profiles == null)
+                    continue;
+
+                foreach (var profile in data.Profiles)
+                    _byBaseId[profile.BaseId] = profile;
+
+                LastSavedAt = string.IsNullOrEmpty(data.SavedAt) ? "unknown" : data.SavedAt;
+                Plugin.Log.Information(
+                    $"Loaded {data.Profiles.Count} aggro profile(s) from {Path.GetFileName(path)}.");
+                return;
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.Error(ex, $"Failed to read aggro training data from {path}; trying the backup.");
+            }
+        }
+    }
+
+    /// <summary>One-time lift of anything still sitting in the old config list.</summary>
+    private void MigrateFromConfig()
+    {
+        if (_config.LearnedAggro.Count == 0)
+            return;
+
+        var moved = 0;
+        foreach (var profile in _config.LearnedAggro)
+        {
+            if (_byBaseId.ContainsKey(profile.BaseId))
+                continue;
+
+            _byBaseId[profile.BaseId] = profile;
+            moved++;
+        }
+
+        _config.LearnedAggro.Clear();
+
+        if (moved > 0)
+        {
+            Plugin.Log.Information($"Migrated {moved} aggro profile(s) out of the plugin config into their own file.");
+            Save();
+        }
+    }
+
+    /// <summary>
+    /// Persists the table. Called after every accepted sample, so a reload or a
+    /// crash cannot lose measurements.
+    /// </summary>
+    public void Save()
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(_filePath);
+            if (!string.IsNullOrEmpty(directory))
+                Directory.CreateDirectory(directory);
+
+            var data = new AggroDataFile
+            {
+                SavedAt  = DateTime.UtcNow.ToString("o"),
+                Profiles = _byBaseId.Values.ToList(),
+            };
+
+            var tempPath = _filePath + ".tmp";
+            File.WriteAllText(tempPath, JsonConvert.SerializeObject(data, Formatting.Indented));
+
+            // Previous good copy becomes the backup, then the new file lands.
+            if (File.Exists(_filePath))
+                File.Copy(_filePath, _backupPath, true);
+
+            File.Move(tempPath, _filePath, true);
+
+            LastSavedAt = data.SavedAt;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Error(ex, "Failed to save aggro training data.");
+        }
     }
 
     /// <summary>Samples past this are not real detections. Shared with the trainer.</summary>
@@ -272,6 +399,7 @@ public sealed class AggroLearningStore
     {
         _byBaseId.Clear();
         _config.LearnedAggro.Clear();
+        Save();
     }
 
     public void Forget(uint baseId)
@@ -280,6 +408,7 @@ public sealed class AggroLearningStore
             return;
 
         _config.LearnedAggro.RemoveAll(p => p.BaseId == baseId);
+        Save();
     }
 
     /// <summary>
@@ -302,7 +431,6 @@ public sealed class AggroLearningStore
         {
             profile = new AggroProfile { BaseId = baseId };
             _byBaseId[baseId] = profile;
-            _config.LearnedAggro.Add(profile);
         }
 
         profile.Name                 = name;
