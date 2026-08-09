@@ -47,6 +47,28 @@ public sealed class Configuration : IPluginConfiguration
     /// </summary>
     public float AutoOpenDistance { get; set; } = 2.0f;
 
+    // --- Enemy Vision (Occult Crescent) ---
+
+    /// <summary>Draw the detection shape for sight-based (cone) enemies.</summary>
+    public bool ShowSightEnemyVision { get; set; } = true;
+
+    /// <summary>Draw the detection shape for sound-based (omnidirectional) enemies.</summary>
+    public bool ShowSoundEnemyVision { get; set; } = true;
+
+    /// <summary>
+    /// Assumed detection distance in yalms, measured from the enemy's hitbox
+    /// edge. THIS IS AN ESTIMATE — the game does not publish aggro range
+    /// anywhere in its data files, so this is a tunable guess, not a fact.
+    /// See docs/enemy-vision.md.
+    /// </summary>
+    public float EnemyVisionRadius { get; set; } = 12.0f;
+
+    /// <summary>Width of the sight cone in degrees. Also an estimate.</summary>
+    public float EnemyVisionConeDegrees { get; set; } = 90.0f;
+
+    /// <summary>Recolour a shape when the player is standing inside it.</summary>
+    public bool HighlightEnemyVisionWhenInside { get; set; } = true;
+
     public bool IsToolEnabled(string id) =>
         !EnabledTools.TryGetValue(id, out var enabled) || enabled;
 

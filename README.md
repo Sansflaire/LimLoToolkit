@@ -32,10 +32,17 @@ Settings — it then disappears from the sidebar and stops running.
 |------|--------------|
 | Coffer Lines | Draws a line from you to each nearby treasure coffer in the Occult Crescent — brown for bronze, silver for silver. Each grade toggles separately. Optionally targets and opens a coffer once you walk up to it. Everything pauses in combat, and the tool does nothing outside South Horn and North Horn. |
 
+| Enemy Vision | Draws each nearby enemy's detection area on the ground — a wedge in front of sight-based enemies, a full circle around sound-based ones — and turns it red when you are standing inside it. Occult Crescent only. |
+
 > **Auto-open is off by default and is opt-in.** It targets and opens a coffer
 > for you once *you* have walked within about 2 yalms of it — it never moves
 > your character. Square Enix does not permit third-party automation, so enable
 > it at your own risk.
+
+> **Enemy Vision: the shape is exact, the size is a guess.** Whether an enemy
+> detects in a cone or in all directions is read from the game's own per-enemy
+> data. The *distance* is not published by the game anywhere, so it is a slider
+> you tune by eye. See [docs/enemy-vision.md](docs/enemy-vision.md).
 
 **Info**
 

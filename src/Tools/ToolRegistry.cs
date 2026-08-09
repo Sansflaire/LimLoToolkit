@@ -23,6 +23,7 @@ public sealed class ToolRegistry : IDisposable
 
         // Registration order is display order. Real tools first, info last.
         Register(new OccultCofferLinesTool(config));
+        Register(new EnemyVisionTool(config));
 
         Register(new CharacterInfoTool());
         Register(new EorzeaClockTool());
