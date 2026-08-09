@@ -5,38 +5,49 @@ using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.ClientState.Objects.Enums;
+using Dalamud.Game.ClientState.Objects.Types;
+
+using FFXIVClientStructs.FFXIV.Client.Game.Control;
+using FFXIVClientStructs.FFXIV.Client.Game.UI;
 
 using Lumina.Excel;
 
-using XIVTreasure = Lumina.Excel.Sheets.Treasure;
+using NativeObject   = FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject;
+using NativeTreasure = FFXIVClientStructs.FFXIV.Client.Game.Object.Treasure;
+using TreasureFlags  = FFXIVClientStructs.FFXIV.Client.Game.Object.Treasure.TreasureFlags;
+using TreasureState  = FFXIVClientStructs.FFXIV.Client.Game.Object.Treasure.TreasureState;
+using XIVTreasure    = Lumina.Excel.Sheets.Treasure;
 
 namespace LimLoToolkit.Tools;
 
 /// <summary>
 /// Draws a line from the player to nearby treasure coffers inside the Occult
-/// Crescent, colour-coded by coffer grade.
+/// Crescent, and optionally targets and opens one the player walks up to.
 ///
-/// Mechanisms (verified against OhKannaDuh/BOCCHI's implementation, which is
-/// the reference for this behaviour — see docs/occult-crescent.md):
+/// Mechanisms (verified against OhKannaDuh/BOCCHI's implementation and against
+/// the game itself — see docs/occult-crescent.md):
 ///
 ///  - Coffers are <see cref="ObjectKind.Treasure"/> entries in the object table.
 ///  - Grade comes from the <c>Treasure</c> Excel sheet row addressed by the
 ///    object's <c>BaseId</c>: its <c>SGB</c> row id is 1596 for bronze and
 ///    1597 for silver. Anything else is an unrelated chest and is ignored.
-///  - Lines are suppressed in combat, matching BOCCHI ("while out of combat").
-///  - The whole tool is inert outside the Occult Crescent territories.
+///  - Opening is <c>TargetSystem.InteractWithObject</c>, the same primitive
+///    BOCCHI and Pandora's AutoOpenChests use, throttled to 200 ms.
+///  - Open state is read from the native <c>Treasure</c> struct's flags/state,
+///    plus the loot window, so an already-open coffer is never re-poked.
+///  - Lines and auto-open are both suppressed in combat, and the whole tool is
+///    inert outside the Occult Crescent territories.
 ///
-/// This is an independent implementation. BOCCHI renders through Pictomancy;
-/// this uses Dalamud's own <c>WorldToScreen</c> plus an ImGui foreground draw
-/// list, so the plugin stays a single DLL with no extra dependencies. The
-/// tradeoff is that a segment whose endpoint leaves the screen is skipped
-/// rather than clipped to the viewport edge.
+/// This is an independent implementation. BOCCHI renders through Pictomancy and
+/// paths to coffers with vnavmesh; this uses Dalamud's own <c>WorldToScreen</c>
+/// plus an ImGui foreground draw list and never moves the player, so the plugin
+/// stays a single DLL with no extra dependencies.
 /// </summary>
 public sealed class OccultCofferLinesTool : ITool
 {
     public string Id          => "occult-coffer-lines";
     public string Name        => "Coffer Lines";
-    public string Description => "Lines to nearby bronze and silver coffers in the Occult Crescent.";
+    public string Description => "Lines to nearby bronze and silver coffers in the Occult Crescent, with optional auto-open.";
     public string Category    => "Toolkit";
 
     /// <summary>Occult Crescent territories. The tool does nothing anywhere else.</summary>
@@ -52,6 +63,24 @@ public sealed class OccultCofferLinesTool : ITool
 
     private const float LineThickness = 3f;
 
+    /// <summary>Past roughly this range the client refuses the interact outright.</summary>
+    public const float MinOpenDistance = 1.0f;
+    public const float MaxOpenDistance = 2.75f;
+
+    /// <summary>Pandora's ChestThrottle cadence, which BOCCHI also matches.</summary>
+    private const long InteractThrottleMs = 200;
+
+    /// <summary>Breathing room after a coffer actually opens, for the loot window.</summary>
+    private const long PostOpenCooldownMs = 700;
+
+    /// <summary>
+    /// Circuit breaker. A coffer that will not open — blocked line of sight,
+    /// another party's chest, a level gate — must not be poked forever at five
+    /// attempts a second. After this many tries it is benched.
+    /// </summary>
+    private const int  MaxAttemptsPerCoffer = 8;
+    private const long BenchDurationMs      = 15_000;
+
     private enum CofferGrade
     {
         Bronze,
@@ -65,6 +94,12 @@ public sealed class OccultCofferLinesTool : ITool
         public float       Distance { get; } = distance;
     }
 
+    private sealed class AttemptRecord
+    {
+        public int  Attempts;
+        public long BenchedUntil;
+    }
+
     private readonly Configuration _config;
 
     private ExcelSheet<XIVTreasure>? _treasureSheet;
@@ -75,6 +110,13 @@ public sealed class OccultCofferLinesTool : ITool
     private Vector3      _origin;
     private bool         _inOccultCrescent;
     private bool         _inCombat;
+
+    // Auto-open state. Framework thread only, except for the read-only status
+    // fields the panel displays.
+    private readonly Dictionary<ulong, AttemptRecord> _attempts = new();
+    private long   _nextInteractAllowedAt;
+    private int    _openedThisSession;
+    private string _lastAction = string.Empty;
 
     public OccultCofferLinesTool(Configuration config) => _config = config;
 
@@ -92,6 +134,10 @@ public sealed class OccultCofferLinesTool : ITool
 
             if (!_inOccultCrescent)
             {
+                // Leaving the zone invalidates every object id we were tracking.
+                if (_attempts.Count > 0)
+                    _attempts.Clear();
+
                 _coffers = found;
                 return;
             }
@@ -106,6 +152,10 @@ public sealed class OccultCofferLinesTool : ITool
             _origin = player.Position;
 
             _treasureSheet ??= Plugin.DataManager.GetExcelSheet<XIVTreasure>();
+
+            IGameObject? openCandidate     = null;
+            var          openCandidateDist = float.MaxValue;
+            var          openRange         = Math.Clamp(_config.AutoOpenDistance, MinOpenDistance, MaxOpenDistance);
 
             foreach (var obj in Plugin.ObjectTable)
             {
@@ -128,18 +178,161 @@ public sealed class OccultCofferLinesTool : ITool
                     default: continue;
                 }
 
-                found.Add(new Coffer(obj.Position, grade, Vector3.Distance(_origin, obj.Position)));
+                var distance = Vector3.Distance(_origin, obj.Position);
+                found.Add(new Coffer(obj.Position, grade, distance));
+
+                if (distance <= openRange && distance < openCandidateDist && !IsBenched(obj.GameObjectId))
+                {
+                    openCandidate     = obj;
+                    openCandidateDist = distance;
+                }
             }
 
             found.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+
+            if (openCandidate != null)
+                TryAutoOpen(openCandidate);
         }
         catch (Exception ex)
         {
-            Plugin.Log.Error(ex, "OccultCofferLinesTool failed to scan for coffers.");
+            Plugin.Log.Error(ex, "OccultCofferLinesTool failed during its framework tick.");
         }
 
         _coffers = found;
     }
+
+    // ── Auto-open ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Conditions under which the plugin must keep its hands off. Anything that
+    /// means "the player is busy, mid-transition, or not in control" belongs
+    /// here — firing an interact through one of these is how you desync a
+    /// cutscene or eat an input during a zone change.
+    /// </summary>
+    private static bool IsBlockedByCondition()
+    {
+        var c = Plugin.Condition;
+
+        return c[ConditionFlag.InCombat]
+            || c[ConditionFlag.BetweenAreas]
+            || c[ConditionFlag.BetweenAreas51]
+            || c[ConditionFlag.Casting]
+            || c[ConditionFlag.Occupied]
+            || c[ConditionFlag.Occupied30]
+            || c[ConditionFlag.Occupied33]
+            || c[ConditionFlag.Occupied38]
+            || c[ConditionFlag.Occupied39]
+            || c[ConditionFlag.OccupiedInEvent]
+            || c[ConditionFlag.OccupiedInQuestEvent]
+            || c[ConditionFlag.OccupiedInCutSceneEvent]
+            || c[ConditionFlag.OccupiedSummoningBell]
+            || c[ConditionFlag.WatchingCutscene]
+            || c[ConditionFlag.WatchingCutscene78]
+            || c[ConditionFlag.Unconscious]
+            || c[ConditionFlag.LoggingOut];
+    }
+
+    private bool IsBenched(ulong gameObjectId) =>
+        _attempts.TryGetValue(gameObjectId, out var record)
+        && record.BenchedUntil > Environment.TickCount64;
+
+    private unsafe void TryAutoOpen(IGameObject coffer)
+    {
+        if (!_config.AutoOpenCoffers)
+            return;
+
+        var now = Environment.TickCount64;
+        if (now < _nextInteractAllowedAt)
+            return;
+
+        if (IsBlockedByCondition())
+            return;
+
+        var native = (NativeObject*)coffer.Address;
+        if (native == null)
+            return;
+
+        var treasure = (NativeTreasure*)native;
+
+        // Already open, already looted, or mid-open animation: never re-poke.
+        if (IsOpenedOrLooted(coffer, treasure))
+        {
+            _attempts.Remove(coffer.GameObjectId);
+            return;
+        }
+
+        if (treasure->State is TreasureState.Opening)
+        {
+            _nextInteractAllowedAt = now + PostOpenCooldownMs;
+            return;
+        }
+
+        if (!native->GetIsTargetable())
+            return;
+
+        if (!_attempts.TryGetValue(coffer.GameObjectId, out var record))
+        {
+            record = new AttemptRecord();
+            _attempts[coffer.GameObjectId] = record;
+        }
+
+        record.Attempts++;
+        if (record.Attempts > MaxAttemptsPerCoffer)
+        {
+            record.BenchedUntil = now + BenchDurationMs;
+            record.Attempts     = 0;
+            _lastAction         = $"Gave up on a coffer after {MaxAttemptsPerCoffer} tries — retrying in {BenchDurationMs / 1000}s.";
+            Plugin.Log.Debug($"Benching coffer {coffer.GameObjectId:X} after {MaxAttemptsPerCoffer} failed interacts.");
+            return;
+        }
+
+        _nextInteractAllowedAt = now + InteractThrottleMs;
+
+        var targetSystem = TargetSystem.Instance();
+        if (targetSystem == null)
+            return;
+
+        // Target first — the user asked for target-and-open, and it also makes
+        // what the plugin is doing visible in the game's own UI.
+        Plugin.TargetManager.Target = coffer;
+        targetSystem->InteractWithObject(native, true);
+
+        if (IsOpenedOrLooted(coffer, treasure))
+        {
+            _openedThisSession++;
+            _attempts.Remove(coffer.GameObjectId);
+            _nextInteractAllowedAt = now + PostOpenCooldownMs;
+            _lastAction            = $"Opened a coffer ({_openedThisSession} this session).";
+        }
+    }
+
+    /// <summary>
+    /// True once a coffer is spent. Flags and state cover the normal open, and
+    /// the loot window covers one opened by someone else in the party.
+    /// </summary>
+    private static unsafe bool IsOpenedOrLooted(IGameObject coffer, NativeTreasure* treasure)
+    {
+        if (treasure->Flags.HasFlag(TreasureFlags.Opened)
+            || treasure->Flags.HasFlag(TreasureFlags.FadedOut)
+            || treasure->State is TreasureState.Opened or TreasureState.FadingOut or TreasureState.FadedOut)
+        {
+            return true;
+        }
+
+        var loot = Loot.Instance();
+        if (loot == null)
+            return false;
+
+        foreach (var item in loot->Items)
+        {
+            if (item.ChestObjectId == coffer.GameObjectId)
+                return true;
+        }
+
+        return false;
+    }
+
+    // ── Overlay ──────────────────────────────────────────────────────────────
 
     public void DrawOverlay()
     {
@@ -185,6 +378,8 @@ public sealed class OccultCofferLinesTool : ITool
         _                  => false,
     };
 
+    // ── Panel ────────────────────────────────────────────────────────────────
+
     public void Draw()
     {
         UiHelpers.SectionHeader("Coffer Lines");
@@ -211,12 +406,52 @@ public sealed class OccultCofferLinesTool : ITool
         UiHelpers.HelpMarker("Draw a silver line from you to nearby silver coffers.");
 
         ImGui.Spacing();
+        UiHelpers.SectionHeader("Auto-Open");
+
+        var autoOpen = _config.AutoOpenCoffers;
+        if (ImGui.Checkbox("Target and open coffers automatically", ref autoOpen))
+        {
+            _config.AutoOpenCoffers = autoOpen;
+            Plugin.SaveConfiguration();
+        }
+        UiHelpers.HelpMarker(
+            "When you walk within range of a coffer, target it and open it for you. " +
+            "It never moves your character — you still walk there yourself.");
+
+        if (_config.AutoOpenCoffers)
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, UiHelpers.Warn);
+            ImGui.TextWrapped(
+                "This acts on the game for you. Square Enix does not permit third-party " +
+                "automation, so use it at your own risk.");
+            ImGui.PopStyleColor();
+
+            ImGui.Spacing();
+
+            var range = Math.Clamp(_config.AutoOpenDistance, MinOpenDistance, MaxOpenDistance);
+            ImGui.SetNextItemWidth(200f);
+            if (ImGui.SliderFloat("Open within (yalms)", ref range, MinOpenDistance, MaxOpenDistance, "%.2f"))
+            {
+                _config.AutoOpenDistance = Math.Clamp(range, MinOpenDistance, MaxOpenDistance);
+                Plugin.SaveConfiguration();
+            }
+            UiHelpers.HelpMarker(
+                $"The game itself refuses to interact past roughly {MaxOpenDistance:F2} yalms, " +
+                "so this cannot be raised beyond that. 2.00 matches what other plugins use.");
+
+            UiHelpers.Muted(
+                "Paused in combat, during cutscenes and zone changes, and any time you are " +
+                "otherwise occupied. A coffer that refuses to open is dropped after " +
+                $"{MaxAttemptsPerCoffer} tries and retried in {BenchDurationMs / 1000} seconds.");
+        }
+
+        ImGui.Spacing();
         UiHelpers.SectionHeader("Status");
 
         if (!_inOccultCrescent)
         {
             UiHelpers.Muted(
-                "You are not in the Occult Crescent, so nothing is being drawn. " +
+                "You are not in the Occult Crescent, so nothing is being drawn or opened. " +
                 "Head to South Horn or North Horn.");
             return;
         }
@@ -237,14 +472,24 @@ public sealed class OccultCofferLinesTool : ITool
             UiHelpers.Row("Silver in range", silverCount.ToString());
             UiHelpers.Row("Nearest",
                 coffers.Count > 0 ? $"{coffers[0].Distance:F1} yalms ({coffers[0].Grade})" : "(none)");
+
+            if (_config.AutoOpenCoffers)
+                UiHelpers.Row("Opened this session", _openedThisSession.ToString());
+
             ImGui.EndTable();
+        }
+
+        if (_config.AutoOpenCoffers && !string.IsNullOrEmpty(_lastAction))
+        {
+            ImGui.Spacing();
+            UiHelpers.Muted(_lastAction);
         }
 
         if (_inCombat)
         {
             ImGui.Spacing();
             ImGui.PushStyleColor(ImGuiCol.Text, UiHelpers.Warn);
-            ImGui.TextWrapped("Lines are hidden while you are in combat.");
+            ImGui.TextWrapped("Paused while you are in combat — no lines, no auto-open.");
             ImGui.PopStyleColor();
         }
     }

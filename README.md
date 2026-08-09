@@ -30,7 +30,12 @@ Settings — it then disappears from the sidebar and stops running.
 
 | Tool | What it does |
 |------|--------------|
-| Coffer Lines | Draws a line from you to each nearby treasure coffer in the Occult Crescent — brown for bronze, silver for silver. Each grade toggles separately. Lines hide while you are in combat, and the tool does nothing outside South Horn and North Horn. |
+| Coffer Lines | Draws a line from you to each nearby treasure coffer in the Occult Crescent — brown for bronze, silver for silver. Each grade toggles separately. Optionally targets and opens a coffer once you walk up to it. Everything pauses in combat, and the tool does nothing outside South Horn and North Horn. |
+
+> **Auto-open is off by default and is opt-in.** It targets and opens a coffer
+> for you once *you* have walked within about 2 yalms of it — it never moves
+> your character. Square Enix does not permit third-party automation, so enable
+> it at your own risk.
 
 **Info**
 

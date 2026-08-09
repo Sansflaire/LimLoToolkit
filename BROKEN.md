@@ -13,7 +13,7 @@ every plugin (missing `AssemblyVersion` in the bundled manifest, wrong
 
 | ID | Summary | Lesson | Details |
 |----|---------|--------|---------|
-| _(none yet)_ | | | |
+| 001 | A PowerShell version-bump one-liner turned the em-dash in the plugin `Description` into `â€”` in both manifests | Never round-trip repo files through `Get-Content`/`Set-Content` in PowerShell 5.1 — it reads BOM-less UTF-8 as ANSI, and `-Encoding utf8` on the write does not save you. Use Edit/Write. Grep for `â€` before committing a manifest | [001-powershell-utf8-mangling.md](Issues/001-powershell-utf8-mangling.md) |
 
 ## How to use this file
 

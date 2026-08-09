@@ -34,6 +34,19 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>Draw a silver line from the player to nearby silver coffers.</summary>
     public bool DrawLineToSilverCoffers { get; set; } = true;
 
+    /// <summary>
+    /// Automatically target and open a coffer once the player walks within
+    /// <see cref="AutoOpenDistance"/> of it. Off by default — this is
+    /// automation and the user opts in deliberately.
+    /// </summary>
+    public bool AutoOpenCoffers { get; set; } = false;
+
+    /// <summary>
+    /// Range in yalms at which auto-open fires. Clamped to the game's own
+    /// interact limit; beyond roughly 2.75y the client refuses the interact.
+    /// </summary>
+    public float AutoOpenDistance { get; set; } = 2.0f;
+
     public bool IsToolEnabled(string id) =>
         !EnabledTools.TryGetValue(id, out var enabled) || enabled;
 
