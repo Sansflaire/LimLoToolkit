@@ -926,15 +926,61 @@ public sealed class AggroLearningStore
         if (profile == null)
             return reach;
 
-        EnsureBins(profile);
-
-        var bin  = BinFor(Math.Clamp(angleOffFacing, 0f, 180f));
-        var safe = profile.BinMinSafeDistance[bin];
-
-        if (safe > 0f)
-            reach = MathF.Min(reach, MathF.Max(0f, safe - 0.25f));
+        var safe = SafeCapAt(profile, angleOffFacing);
+        if (safe is { } cap)
+            reach = MathF.Min(reach, MathF.Max(0f, cap - 0.25f));
 
         return reach;
+    }
+
+    /// <summary>
+    /// Smoothly interpolated upper bound at an angle, or null where nothing is
+    /// known nearby.
+    ///
+    /// Reading raw slice values gives a staircase: each slice was measured at
+    /// whatever distance the player happened to stand at, so neighbouring
+    /// values jump around and the outline comes out as ragged steps. Blending
+    /// between slice centres keeps the same information but renders as a curve.
+    /// </summary>
+    private static float? SafeCapAt(AggroProfile profile, float angleOffFacing)
+    {
+        EnsureBins(profile);
+
+        var angle = Math.Clamp(angleOffFacing, 0f, 180f);
+
+        // Position along the slice centres, which sit at (i + 0.5) * width.
+        var t     = angle / BinWidthDegrees - 0.5f;
+        var lower = (int)MathF.Floor(t);
+        var frac  = t - lower;
+
+        var a = NearestSafe(profile, lower);
+        var b = NearestSafe(profile, lower + 1);
+
+        return (a, b) switch
+        {
+            ({ } lo, { } hi) => lo + (hi - lo) * frac,
+            ({ } lo, null)   => lo,
+            (null, { } hi)   => hi,
+            _                => null,
+        };
+    }
+
+    /// <summary>Safe bound in a slice, or the closest slice that has one.</summary>
+    private static float? NearestSafe(AggroProfile profile, int bin)
+    {
+        for (var offset = 0; offset < AngleBins; offset++)
+        {
+            var low  = bin - offset;
+            var high = bin + offset;
+
+            if (low >= 0 && low < AngleBins && profile.BinMinSafeDistance[low] > 0f)
+                return profile.BinMinSafeDistance[low];
+
+            if (high >= 0 && high < AngleBins && profile.BinMinSafeDistance[high] > 0f)
+                return profile.BinMinSafeDistance[high];
+        }
+
+        return null;
     }
 
     /// <summary>True when a mob has any evidence worth drawing from.</summary>

@@ -246,7 +246,13 @@ public sealed class EnemyVisionTool : ITool
 
                 var inside = distance - playerHitbox - obj.HitboxRadius <= reachAtPlayer;
 
-                var radius   = Math.Clamp(reachAtPlayer, 0f, MaxRadius) + obj.HitboxRadius;
+                // The DRAWN size is a property of the mob, never of where the
+                // player happens to be standing. Using the per-angle reach here
+                // made the cone visibly grow and shrink as the player circled
+                // it — the reach at the player's angle answers "can it see me",
+                // which is a different question from "how big is it".
+                var drawReach = classified ? model.Range : gap;
+                var radius    = Math.Clamp(drawReach, 0f, MaxRadius) + obj.HitboxRadius;
                 var drawCone = classified
                     ? (model.Type == AggroLearningStore.RadiusType ? 360f : model.FullConeDegrees)
                     : effectiveOmni ? 360f : cone;
@@ -319,10 +325,19 @@ public sealed class EnemyVisionTool : ITool
                     ? DangerColor
                     : shape.Omnidirectional ? SoundColor : SightColor);
 
-            // Anything with evidence is drawn angle by angle, so proven-safe
-            // directions genuinely pull the outline in instead of being papered
-            // over by an assumed circle.
-            if (AggroLearningStore.HasEvidence(shape.Profile))
+            // Once a mob is classified it is one of the two real shapes, drawn
+            // clean — the evidence already went into deciding which and how big.
+            // Only an unclassified mob draws from raw bounds, and even then it
+            // is smoothed rather than stepped.
+            if (shape.Model.Type != AggroLearningStore.UnknownType)
+            {
+                if (shape.Model.Type == AggroLearningStore.RadiusType)
+                    DrawGroundCircle(drawList, shape.Position, shape.Radius, colour);
+                else
+                    DrawGroundCone(drawList, shape.Position, shape.Radius, shape.Facing,
+                                   shape.Model.FullConeDegrees, colour);
+            }
+            else if (AggroLearningStore.HasEvidence(shape.Profile))
                 DrawEvidenceShape(drawList, shape, colour);
             else if (shape.Omnidirectional || shape.ConeDegrees >= 360f)
                 DrawGroundCircle(drawList, shape.Position, shape.Radius, colour);
@@ -367,13 +382,8 @@ public sealed class EnemyVisionTool : ITool
             var reach = AggroLearningStore.ReachForDrawing(
                 shape.Profile, shape.Model, offFacing, fallback);
 
-            // A slice proven safe right up to the hitbox has nothing to draw.
-            if (reach <= 0.05f)
-            {
-                previous = null;
-                continue;
-            }
-
+            // Never break the outline — a direction proven safe hugs the hitbox
+            // rather than leaving a hole, so the shape still reads as one thing.
             var r = Math.Clamp(reach, 0f, MaxRadius) + shape.HitboxRadius;
 
             var point = new Vector3(
