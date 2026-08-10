@@ -17,6 +17,45 @@ public sealed class AggroDataFile
     public List<AggroProfile> Profiles { get; set; } = new();
 }
 
+/// <summary>
+/// The only two detection shapes the game actually implements. Everything the
+/// trainer gathers is evidence toward deciding which of these a mob is, and
+/// with what numbers — the per-angle envelope is the raw evidence, this is the
+/// conclusion drawn from it.
+/// </summary>
+public enum DetectionType
+{
+    /// <summary>Not enough evidence to say yet.</summary>
+    Unknown,
+
+    /// <summary>Forward arc only. Approaching from outside the arc is safe at any range.</summary>
+    Cone,
+
+    /// <summary>All directions. Any approach inside the range is detected.</summary>
+    Radius,
+}
+
+/// <summary>A mob's detection, as classified from the evidence.</summary>
+public readonly struct DetectionModel(
+    DetectionType type,
+    float         range,
+    float         halfAngleDegrees,
+    string        reason)
+{
+    public DetectionType Type { get; } = type;
+
+    /// <summary>Proven maximum reach: the furthest distance we were ever noticed from.</summary>
+    public float Range { get; } = range;
+
+    /// <summary>Half-width of the arc. 180 for a radius mob.</summary>
+    public float HalfAngleDegrees { get; } = halfAngleDegrees;
+
+    /// <summary>Plain-language justification, shown in the UI.</summary>
+    public string Reason { get; } = reason;
+
+    public float FullConeDegrees => MathF.Min(360f, HalfAngleDegrees * 2f);
+}
+
 /// <summary>How much we trust a mob's measured numbers.</summary>
 public enum AggroConfidence
 {
@@ -125,6 +164,31 @@ public sealed class AggroLearningStore
 
     private const float AngleGrowthEpsilon = 4f;
 
+    /// <summary>A safe stand must beat the known bound by this much to count.</summary>
+    private const float SafeTightenEpsilon = 0.5f;
+
+    /// <summary>Minimum gap between debounced writes.</summary>
+    private const long SaveDebounceMs = 2000;
+
+    private bool _dirty;
+    private long _lastSaveAt;
+
+    /// <summary>
+    /// Marks the table changed without writing immediately. Used for frequent,
+    /// individually cheap updates such as safe observations. Pulls call
+    /// <see cref="Save"/> directly — they are rare and expensive to re-gather.
+    /// </summary>
+    public void MarkDirty() => _dirty = true;
+
+    /// <summary>Writes a pending change once the debounce window has passed.</summary>
+    public void FlushIfDirty()
+    {
+        if (!_dirty || Environment.TickCount64 - _lastSaveAt < SaveDebounceMs)
+            return;
+
+        Save();
+    }
+
     /// <summary>Keep the table bounded; a mob needs nowhere near this many.</summary>
     private const int MaxSamplesPerMob = 100;
 
@@ -144,6 +208,11 @@ public sealed class AggroLearningStore
 
     /// <summary>Filled slices needed before the envelope is trustworthy.</summary>
     public const int MinFilledBins = 6;
+
+    // Short aliases so call sites read cleanly.
+    public const DetectionType UnknownType = DetectionType.Unknown;
+    public const DetectionType ConeType    = DetectionType.Cone;
+    public const DetectionType RadiusType  = DetectionType.Radius;
 
     public static int BinFor(float angleDegrees) =>
         Math.Clamp((int)(angleDegrees / BinWidthDegrees), 0, AngleBins - 1);
@@ -188,10 +257,10 @@ public sealed class AggroLearningStore
         var bin      = BinFor(angleDegrees);
         var existing = profile.BinMinSafeDistance[bin];
 
-        // Only a CLOSER safe stand teaches us anything. Standing further out
-        // than a bound we already have is not new information, so this stays
-        // quiet instead of firing every frame you idle near a mob.
-        if (existing > 0f && distance >= existing)
+        // Only a MEANINGFULLY closer safe stand teaches us anything. Without
+        // the epsilon this fires on every frame of an approach — 6.8, 6.8, 6.7
+        // — each one logging and writing to disk.
+        if (existing > 0f && distance >= existing - SafeTightenEpsilon)
             return false;
 
         profile.BinMinSafeDistance[bin] = distance;
@@ -419,6 +488,8 @@ public sealed class AggroLearningStore
             File.Move(tempPath, _filePath, true);
 
             LastSavedAt = data.SavedAt;
+            _dirty      = false;
+            _lastSaveAt = Environment.TickCount64;
         }
         catch (Exception ex)
         {
@@ -754,6 +825,75 @@ public sealed class AggroLearningStore
         Array.Sort(sorted);
         var index = (int)MathF.Round(percentile * (sorted.Length - 1));
         return sorted[Math.Clamp(index, 0, sorted.Length - 1)];
+    }
+
+    /// <summary>
+    /// Decides whether a mob is a cone or a radius, and with what numbers.
+    ///
+    /// The rules, which follow directly from how the game behaves:
+    ///  - Being noticed at distance d proves the reach is AT LEAST d. The
+    ///    furthest such distance is therefore the mob's range.
+    ///  - Getting close from some angle and NOT being noticed, when we are
+    ///    already known to be noticed from further away at another angle, can
+    ///    only mean that angle lies outside a forward arc. That mob is a CONE.
+    ///  - Being noticed from behind means there is no arc to be outside of.
+    ///    That mob is a RADIUS.
+    ///
+    /// The cone's width is bracketed the same way its range is: the widest
+    /// angle we were ever noticed at is inside the arc, the narrowest angle we
+    /// safely closed in from is outside it, and the edge lies between them.
+    /// </summary>
+    public static DetectionModel Classify(AggroProfile profile)
+    {
+        EnsureBins(profile);
+
+        var range = 0f;
+        for (var i = 0; i < AngleBins; i++)
+            if (profile.BinSamples[i] > 0)
+                range = MathF.Max(range, profile.BinMaxDistance[i]);
+
+        if (range <= 0f)
+            return new DetectionModel(DetectionType.Unknown, 0f, 180f, "no pulls recorded yet");
+
+        var widestPullAngle = profile.MaxAngle;
+
+        // The narrowest angle at which we got closer than the proven range and
+        // still went unnoticed. That angle must sit outside a forward arc.
+        var    safeOutsideAngle = float.MaxValue;
+        for (var i = 0; i < AngleBins; i++)
+        {
+            var safe = profile.BinMinSafeDistance[i];
+            if (safe <= 0f || safe >= range - SafeTightenEpsilon)
+                continue;
+
+            var binCentre = (i + 0.5f) * BinWidthDegrees;
+            if (binCentre <= widestPullAngle)
+                continue;   // same arc, just a closer stand — not a cone signal
+
+            safeOutsideAngle = MathF.Min(safeOutsideAngle, binCentre);
+        }
+
+        if (safeOutsideAngle < float.MaxValue)
+        {
+            // Edge lies between the widest detection and the closest safe angle.
+            var half = Math.Clamp((widestPullAngle + safeOutsideAngle) * 0.5f, 5f, 180f);
+
+            return new DetectionModel(
+                DetectionType.Cone, range, half,
+                $"noticed out to {range:F1}y and as wide as {widestPullAngle:F0}°, but slipped inside "
+                + $"at {safeOutsideAngle:F0}° — a forward arc");
+        }
+
+        // Noticed from behind, with nothing suggesting a blind side.
+        if (widestPullAngle >= 135f)
+            return new DetectionModel(
+                DetectionType.Radius, range, 180f,
+                $"noticed from {widestPullAngle:F0}° off its facing — all directions");
+
+        return new DetectionModel(
+            DetectionType.Unknown, range, MathF.Max(widestPullAngle, 45f),
+            $"noticed out to {range:F1}y, but only within {widestPullAngle:F0}° so far — "
+            + "walk in from the side and from behind to settle cone versus radius");
     }
 
     /// <summary>Absolute angle in degrees between a mob's facing and the player.</summary>

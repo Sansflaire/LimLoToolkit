@@ -287,33 +287,49 @@ public sealed class MobViewerTool : ITool
         ImGui.Spacing();
         UiHelpers.SectionHeader("Detection");
 
+        var model = AggroLearningStore.Classify(profile);
+
+        var verdictColour = model.Type switch
+        {
+            DetectionType.Cone   => UiHelpers.Good,
+            DetectionType.Radius => UiHelpers.Good,
+            _                    => UiHelpers.Warn,
+        };
+
+        UiHelpers.Colored(verdictColour, model.Type switch
+        {
+            DetectionType.Cone   => $"CONE — {model.Range:F1}y out to {model.FullConeDegrees:F0}° wide",
+            DetectionType.Radius => $"RADIUS — {model.Range:F1}y in every direction",
+            _                    => "NOT YET CLASSIFIED",
+        });
+
+        UiHelpers.Muted(model.Reason);
+
+        ImGui.Spacing();
+
         if (ImGui.BeginTable("##limlo-mob-detect", 2, ImGuiTableFlags.SizingFixedFit))
         {
-            var omni = profile.SheetOmnidirectional || AggroLearningStore.ContradictsSheet(profile);
-            UiHelpers.Row("Type", omni ? "All directions (sound)" : "Forward only (sight)");
-            UiHelpers.Row("Source", "BNpcBase.IsOmnidirectional (game data)");
+            UiHelpers.Row("Proven range", model.Range > 0f ? $"{model.Range:F1}y" : "unknown");
+            UiHelpers.Row("Arc",
+                model.Type == DetectionType.Radius ? "360° (all directions)"
+                    : model.Type == DetectionType.Cone ? $"{model.FullConeDegrees:F0}° total"
+                    : "undecided");
 
-            var distance = _store.EstimatedDistance(profile);
-            UiHelpers.Row("Range",
-                distance is { } d
-                    ? $"{d:F1}y measured, from {profile.Distances.Count} pull(s)"
-                    : $"{_config.EnemyVisionRadius:F1}y estimated (no data)");
+            UiHelpers.Row("Game data says",
+                profile.SheetOmnidirectional ? "All directions" : "Forward only");
 
-            var cone = _store.EstimatedConeDegrees(profile);
-            UiHelpers.Row("Cone",
-                omni ? "360° (all directions)"
-                     : cone is { } c
-                         ? $"{c:F0}° measured, from {profile.Angles.Count} angle(s)"
-                         : $"{_config.EnemyVisionConeDegrees:F0}° estimated (no data)");
+            if (model.Type != DetectionType.Unknown)
+            {
+                var agrees = (model.Type == DetectionType.Radius) == profile.SheetOmnidirectional;
+                UiHelpers.Row("Agreement", agrees ? "matches observation" : "CONTRADICTED by observation");
+            }
 
             if (profile.Distances.Count > 0)
             {
+                UiHelpers.Row("Pulls recorded", profile.Distances.Count.ToString());
                 UiHelpers.Row("Closest pull", $"{profile.Distances.Min():F1}y");
-                UiHelpers.Row("Farthest pull", $"{profile.Distances.Max():F1}y");
+                UiHelpers.Row("Widest detection", $"{profile.MaxAngle:F0}° off its facing");
             }
-
-            if (profile.Angles.Count > 0)
-                UiHelpers.Row("Widest angle", $"{profile.Angles.Max():F0}° off its facing");
 
             ImGui.EndTable();
         }

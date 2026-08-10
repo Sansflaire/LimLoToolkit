@@ -193,12 +193,13 @@ public sealed class EnemyVisionTool : ITool
                 var gap  = Math.Clamp(learnedDistance ?? fallbackRadius, 0f, MaxRadius);
                 var cone = Math.Clamp(learnedCone     ?? fallbackCone, MinCone, MaxCone);
 
-                // When the mob has a measured envelope, that replaces the
-                // cone-or-circle guess entirely.
-                var envelope = profile != null && _config.UseLearnedAggroRanges
-                               && AggroLearningStore.FilledBins(profile) > 0
-                    ? profile
-                    : null;
+                // Classify from evidence: the game only does cone or radius, so
+                // the job is deciding which, not drawing a free-form outline.
+                var model = profile != null && _config.UseLearnedAggroRanges
+                    ? AggroLearningStore.Classify(profile)
+                    : default;
+
+                var classified = model.Type != AggroLearningStore.UnknownType;
 
                 // Measurements can contradict the sheet: a "sees only forwards"
                 // mob that pulled from behind is really omnidirectional.
@@ -208,22 +209,24 @@ public sealed class EnemyVisionTool : ITool
 
                 bool  inside;
                 float radius;
+                float drawCone;
 
-                if (envelope != null)
+                if (classified)
                 {
-                    // Measured: the reach at the angle the player actually
-                    // stands at, no assumed shape involved.
-                    var measured = Math.Clamp(
-                        AggroLearningStore.RadiusAtAngle(envelope, playerAngle) ?? gap, 0f, MaxRadius);
+                    var measured = Math.Clamp(model.Range, 0f, MaxRadius);
 
-                    radius = measured + obj.HitboxRadius;
-                    inside = distance - playerHitbox - obj.HitboxRadius <= measured;
+                    radius   = measured + obj.HitboxRadius;
+                    drawCone = model.Type == AggroLearningStore.RadiusType ? 360f : model.FullConeDegrees;
+
+                    inside = distance - playerHitbox - obj.HitboxRadius <= measured
+                             && playerAngle <= model.HalfAngleDegrees;
                 }
                 else
                 {
-                    radius = gap + obj.HitboxRadius;
-                    inside = distance - playerHitbox <= radius;
+                    radius   = gap + obj.HitboxRadius;
+                    drawCone = effectiveOmni ? 360f : cone;
 
+                    inside = distance - playerHitbox <= radius;
                     if (inside && !effectiveOmni && cone < 360f)
                         inside = playerAngle <= cone * 0.5f;
                 }
@@ -235,14 +238,14 @@ public sealed class EnemyVisionTool : ITool
                     obj.Position,
                     obj.Rotation,
                     radius,
-                    effectiveOmni ? 360f : cone,
-                    effectiveOmni,
+                    drawCone,
+                    drawCone >= 360f,
                     inside,
                     name,
                     obj.BaseId,
                     distance,
                     confidence,
-                    learnedDistance.HasValue) { Gap = gap, Envelope = envelope, HitboxRadius = obj.HitboxRadius });
+                    classified) { Gap = gap, HitboxRadius = obj.HitboxRadius });
             }
 
             shapes.Sort((a, b) => a.Distance.CompareTo(b.Distance));
@@ -288,9 +291,7 @@ public sealed class EnemyVisionTool : ITool
                     ? DangerColor
                     : shape.Omnidirectional ? SoundColor : SightColor);
 
-            if (shape.Envelope is { } envelope)
-                DrawEnvelope(drawList, shape, envelope, colour);
-            else if (shape.Omnidirectional || shape.ConeDegrees >= 360f)
+            if (shape.Omnidirectional || shape.ConeDegrees >= 360f)
                 DrawGroundCircle(drawList, shape.Position, shape.Radius, colour);
             else
                 DrawGroundCone(drawList, shape.Position, shape.Radius, shape.Facing, shape.ConeDegrees, colour);

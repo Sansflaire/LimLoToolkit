@@ -261,7 +261,11 @@ public sealed class AggroTrainer
             // Negative evidence: standing unnoticed proves the reach at this
             // angle is SHORTER than where we are. Without it the model can only
             // ever grow, so one bad pull inflates a mob permanently.
-            if (!tracked.Ignored && !targetingMe && !tracked.InCombat && !playerInCombat)
+            //
+            // Being in combat with something ELSE does not invalidate this. An
+            // idle mob that has not noticed you has not noticed you, whatever
+            // you happen to be fighting nearby. Only THIS mob's state matters.
+            if (!tracked.Ignored && !targetingMe && !tracked.InCombat)
                 TrySafeObservation(tracked, player, playerHitbox, territoryId, now);
             else
                 _safeDwellSince.Remove(id);
@@ -287,6 +291,8 @@ public sealed class AggroTrainer
         }
 
         _playerWasInCombat = playerInCombat;
+
+        _store.FlushIfDirty();
     }
 
     /// <summary>
@@ -448,7 +454,9 @@ public sealed class AggroTrainer
         if (!tightened)
             return;
 
-        _store.Save();
+        // Debounced: safe observations are frequent and individually cheap.
+        // Pulls still write immediately.
+        _store.MarkDirty();
 
         // Panel only, not chat: useful to see, too frequent to announce.
         LogQuiet($"{tracked.Name} — stood {gap:F1}y at {angle:F0}° unnoticed, so its reach there is under {gap:F1}y.");
