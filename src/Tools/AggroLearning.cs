@@ -452,6 +452,7 @@ public sealed class AggroLearningStore
 
         LoadFromDisk();
         MigrateFromConfig();
+        MergeSeedData();
 
         foreach (var baseId in _config.IgnoredMobBaseIds)
             _ignored.Add(baseId);
@@ -495,6 +496,118 @@ public sealed class AggroLearningStore
             {
                 Plugin.Log.Error(ex, $"Failed to read aggro training data from {path}; trying the backup.");
             }
+        }
+    }
+
+    /// <summary>Profiles that arrived with the plugin rather than being measured here.</summary>
+    public int SeededProfileCount { get; private set; }
+
+    /// <summary>
+    /// Folds the shipped dataset in behind whatever the user has measured
+    /// themselves.
+    ///
+    /// The user's own observations always win — this only fills gaps. A mob the
+    /// user has never met is taken wholesale; a mob they have partly measured
+    /// keeps everything they recorded and takes seed data only for the angular
+    /// slices they have no evidence in at all. Their measurements are of the
+    /// mobs in front of them right now, so they outrank anything baked in at
+    /// build time.
+    ///
+    /// The seed is an embedded resource, so it cannot be missing from a release
+    /// and does not need shipping as a separate file.
+    /// </summary>
+    private void MergeSeedData()
+    {
+        try
+        {
+            using var stream = typeof(AggroLearningStore).Assembly
+                .GetManifestResourceStream("LimLoToolkit.aggro-seed.json");
+
+            if (stream == null)
+            {
+                Plugin.Log.Warning("No embedded aggro seed found.");
+                return;
+            }
+
+            using var reader = new StreamReader(stream);
+            var data = JsonConvert.DeserializeObject<AggroDataFile>(reader.ReadToEnd());
+
+            if (data?.Profiles == null)
+                return;
+
+            var added = 0;
+            var topped = 0;
+
+            foreach (var seed in data.Profiles)
+            {
+                if (!_byBaseId.TryGetValue(seed.BaseId, out var mine))
+                {
+                    EnsureBins(seed);
+                    _byBaseId[seed.BaseId] = seed;
+                    added++;
+                    continue;
+                }
+
+                EnsureBins(mine);
+                EnsureBins(seed);
+
+                var filled = false;
+
+                for (var i = 0; i < AngleBins; i++)
+                {
+                    // Only where the user has nothing at all in this slice.
+                    if (mine.BinSamples[i] > 0 || mine.BinMinSafeDistance[i] > 0f)
+                        continue;
+
+                    if (seed.BinSamples[i] > 0)
+                    {
+                        mine.BinSamples[i]     = seed.BinSamples[i];
+                        mine.BinMaxDistance[i] = seed.BinMaxDistance[i];
+                        filled = true;
+                    }
+
+                    if (seed.BinMinSafeDistance[i] > 0f)
+                    {
+                        mine.BinMinSafeDistance[i] = seed.BinMinSafeDistance[i];
+                        mine.BinSafeSamples[i]     = seed.BinSafeSamples[i];
+                        filled = true;
+                    }
+                }
+
+                // Locations are additive — more known spots is strictly better.
+                foreach (var sighting in seed.Sightings)
+                {
+                    var known = mine.Sightings.Any(s =>
+                        s.Territory == sighting.Territory
+                        && MathF.Abs(s.X - sighting.X) < SightingGridSize
+                        && MathF.Abs(s.Z - sighting.Z) < SightingGridSize);
+
+                    if (!known && mine.Sightings.Count < MaxSightingsPerMob)
+                    {
+                        mine.Sightings.Add(sighting);
+                        filled = true;
+                    }
+                }
+
+                if (filled)
+                {
+                    RecomputeAfterPullRemoval(mine);
+                    topped++;
+                }
+            }
+
+            SeededProfileCount = added;
+
+            if (added > 0 || topped > 0)
+            {
+                Plugin.Log.Information(
+                    $"Seeded {added} mob(s) from the shipped dataset and topped up {topped} more.");
+                Save();
+            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Error(ex, "Failed to merge the embedded aggro seed.");
         }
     }
 

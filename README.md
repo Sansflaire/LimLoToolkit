@@ -46,6 +46,18 @@ Settings — it then disappears from the sidebar and stops running.
 > begins as a slider and becomes a real measurement once training mode has
 > watched enough pulls. See [docs/enemy-vision.md](docs/enemy-vision.md).
 
+### Mob knowledge ships with the plugin
+
+You do not start from nothing. Detection data and sighting locations for the
+Occult Crescent are **built into the plugin**, so mobs are already mapped on
+first launch.
+
+Anything you measure yourself always wins — the shipped data only fills gaps.
+A mob you have never met is taken from it wholesale; a mob you have partly
+measured keeps everything you recorded and takes shipped data only for the
+angles you have no evidence in. Your own observations are of the mobs in front
+of you right now, so they outrank anything baked in at build time.
+
 **Info**
 
 | Tool | What it shows |
