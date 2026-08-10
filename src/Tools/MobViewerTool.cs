@@ -53,12 +53,12 @@ public sealed class MobViewerTool : ITool
     private ushort  _territory;
     private Vector3 _playerPos;
 
-    /// <summary>Put the selected mob's known spots on the in-game map.</summary>
-    private bool _markSelectedOnMap = true;
+    // NOTE: this tool used to place markers on the game's own map. It was
+    // removed at the user's request — the markers rendered as large red flags
+    // and covered the map. Nothing here writes to the game's UI any more.
+    // Sightings are shown only on the plugin's own plot below.
 
     private static readonly Vector4 SightingColor = new(0.35f, 0.85f, 1.00f, 0.90f);
-
-    private readonly MapMarkers _mapMarkers = new();
 
     /// <summary>Base ids currently in the object table, refreshed each tick.</summary>
     private HashSet<uint> _nearby = new();
@@ -89,14 +89,6 @@ public sealed class MobViewerTool : ITool
             _territory    = territory;
             _playerPos    = Plugin.ObjectTable.LocalPlayer?.Position ?? Vector3.Zero;
 
-            // Keep the game map in step with the selection. No-ops unless the
-            // selection, zone, or map visibility actually changed.
-            var selected = _store.Find(_selectedBaseId);
-            _mapMarkers.Sync(
-                _selectedBaseId,
-                territory,
-                selected?.Sightings ?? (IReadOnlyList<Sighting>)Array.Empty<Sighting>(),
-                _markSelectedOnMap);
 
             foreach (var obj in Plugin.ObjectTable)
             {
@@ -301,10 +293,7 @@ public sealed class MobViewerTool : ITool
                     irrelevant ? UiHelpers.Dim : UiHelpers.ConfidenceColor(confidence));
                 var label = string.IsNullOrEmpty(profile.Name) ? $"#{profile.BaseId}" : profile.Name;
                 if (ImGui.Selectable($"{label}###limlo-mob-{profile.BaseId}", profile.BaseId == _selectedBaseId))
-                {
                     _selectedBaseId = profile.BaseId;
-                    _mapMarkers.Invalidate();
-                }
                 ImGui.PopStyleColor();
 
                 if (_nearby.Contains(profile.BaseId))
@@ -340,22 +329,6 @@ public sealed class MobViewerTool : ITool
             return;
         }
 
-        var markOnMap = _markSelectedOnMap;
-        if (ImGui.Checkbox("Mark these on the game map", ref markOnMap))
-        {
-            _markSelectedOnMap = markOnMap;
-            _mapMarkers.Invalidate();
-        }
-        UiHelpers.HelpMarker(
-            $"Places markers on the in-game map for the selected mob, up to {MapMarkers.MaxMarkers}. " +
-            "Open your map to see them. Nothing is drawn over the world.");
-
-        if (_markSelectedOnMap)
-        {
-            UiHelpers.Muted(MapMarkers.IsMapOpen()
-                ? $"{_mapMarkers.PlacedCount} marker(s) on the map."
-                : "Open your map to place the markers.");
-        }
 
         // Fit to the spread of sightings plus the player, with a floor so a
         // single point does not blow up to fill the canvas.
