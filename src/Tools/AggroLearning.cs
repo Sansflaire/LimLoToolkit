@@ -286,13 +286,25 @@ public sealed class AggroLearningStore
         profile.BinMinSafeDistance[bin] = distance;
         profile.BinSafeSamples[bin]++;
 
-        // NOTE: an earlier version deleted pull evidence in this slice whenever
-        // a closer safe stand contradicted it. Simulating that over the real
-        // data first showed it wiping every pull on 8 of 13 mobs, because the
-        // contradictions are pervasive rather than occasional. Pervasive
-        // contradiction means one SOURCE is systematically wrong, and the
-        // answer is to fix that source — not to let the two sides annihilate
-        // each other. See the player-initiated-pull guard in AggroTrainer.
+        // RECENCY WINS. A slice cannot both reach further than this and fail to
+        // notice someone standing here, so the older reading is simply wrong
+        // and is deleted rather than averaged or out-voted.
+        //
+        // Deleting is what allows a shape to shrink while still guaranteeing
+        // every pull it *keeps* lies inside what is drawn — the contradicting
+        // pull no longer exists to be violated.
+        if (profile.BinSamples[bin] > 0 && profile.BinMaxDistance[bin] >= distance)
+        {
+            Plugin.Log.Information(
+                $"[Aggro] {profile.Name}: stood {distance:F1}y at {BinLabel(bin)} unnoticed — "
+                + $"dropping the older {profile.BinMaxDistance[bin]:F1}y pull there.");
+
+            profile.BinMaxDistance[bin] = 0f;
+            profile.BinSamples[bin]     = 0;
+
+            RecomputeAfterPullRemoval(profile);
+        }
+
         return true;
     }
 
@@ -718,6 +730,21 @@ public sealed class AggroLearningStore
             profile.BinSamples[bin]++;
             if (distance > profile.BinMaxDistance[bin])
                 profile.BinMaxDistance[bin] = distance;
+
+            // RECENCY WINS, the other direction. It just noticed us from here,
+            // which is the strongest evidence there is — something that happens
+            // TO the player in the moment. Any older "I stood here unnoticed"
+            // at or inside this distance is stale and goes.
+            var staleSafe = profile.BinMinSafeDistance[bin];
+            if (staleSafe > 0f && staleSafe <= distance)
+            {
+                Plugin.Log.Information(
+                    $"[Aggro] {profile.Name}: noticed at {distance:F1}y at {BinLabel(bin)} — "
+                    + $"dropping the older safe-at-{staleSafe:F1}y reading there.");
+
+                profile.BinMinSafeDistance[bin] = 0f;
+                profile.BinSafeSamples[bin]     = 0;
+            }
 
             if (angle > profile.MaxAngle + AngleGrowthEpsilon)
             {
