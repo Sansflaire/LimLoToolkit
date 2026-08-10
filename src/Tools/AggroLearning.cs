@@ -790,25 +790,43 @@ public sealed class AggroLearningStore
             : AggroConfidence.Learning;
     }
 
-    /// <summary>Short human explanation of what a mob still needs.</summary>
+    /// <summary>
+    /// What a mob still needs, naming the condition that is actually unmet.
+    ///
+    /// This used to report only sample counts, which produced nonsense like
+    /// "needs more pulls (9/8)" — a mob that had comfortably passed the count
+    /// but was still blocked by the stability requirement. Saying a threshold
+    /// is unmet while showing it met is worse than saying nothing.
+    /// </summary>
     public static string WhatIsMissing(AggroProfile profile)
     {
-        var rangeOk = RangeSolved(profile);
-        var shapeOk = ShapeSolved(profile);
+        var parts = new List<string>();
 
-        if (rangeOk && shapeOk)
-            return "solved";
+        if (!RangeSolved(profile))
+        {
+            if (profile.Distances.Count < MinSamplesForConfident)
+                parts.Add($"needs {MinSamplesForConfident - profile.Distances.Count} more pull(s)");
+            else
+                parts.Add($"range still growing — needs "
+                          + $"{StableSamplesForConfident - profile.SamplesSinceMaxGrew} more pull(s) "
+                          + $"without a new furthest ({profile.MaxDistance:F1}y)");
+        }
 
-        var filled = FilledBins(profile);
+        if (!ShapeSolved(profile))
+        {
+            var filled = FilledBins(profile);
 
-        if (!rangeOk && !shapeOk)
-            return $"needs more pulls ({profile.Distances.Count}/{MinSamplesForConfident}) "
-                   + $"and more approach angles ({filled}/{MinFilledBins} covered)";
+            if (filled < MinFilledBins)
+                parts.Add($"needs approaches from {MinFilledBins - filled} more angle(s)");
+            else if (profile.Angles.Count < MinAngleSamplesForConfident)
+                parts.Add($"needs {MinAngleSamplesForConfident - profile.Angles.Count} more angled pull(s)");
+            else
+                parts.Add($"arc still widening — needs "
+                          + $"{StableAngleSamplesForConfident - profile.SamplesSinceAngleGrew} more "
+                          + $"without a wider angle (currently {profile.MaxAngle:F0}°)");
+        }
 
-        if (!rangeOk)
-            return $"needs more pulls ({profile.Distances.Count}/{MinSamplesForConfident})";
-
-        return $"needs approaches from more angles ({filled}/{MinFilledBins} covered)";
+        return parts.Count == 0 ? "solved" : string.Join("; ", parts);
     }
 
     /// <summary>

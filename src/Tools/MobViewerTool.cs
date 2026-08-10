@@ -390,13 +390,13 @@ public sealed class MobViewerTool : ITool
         var ignored = _store.IsIgnored(profile.BaseId);
 
         if (IsOutleveled(profile))
-            UiHelpers.Colored(UiHelpers.Dim,
+            UiHelpers.ColoredWrapped(UiHelpers.Dim,
                 $"Harmless — its Knowledge is {profile.ForayLevel} and yours is {_playerForayLevel}, "
                 + "so it can never aggro you. Not drawn, not trained on.");
         else if (ignored)
-            UiHelpers.Colored(UiHelpers.Dim, "Ignored — not drawn, not trained on.");
+            UiHelpers.ColoredWrapped(UiHelpers.Dim, "Ignored — not drawn, not trained on.");
         else
-            UiHelpers.Colored(
+            UiHelpers.ColoredWrapped(
                 UiHelpers.ConfidenceColor(confidence),
                 EnemyVisionTool.DescribeProgress(_store, profile));
 
@@ -415,7 +415,7 @@ public sealed class MobViewerTool : ITool
         if (AggroLearningStore.ContradictsSheet(profile))
         {
             ImGui.Spacing();
-            UiHelpers.Colored(UiHelpers.Warn,
+            UiHelpers.ColoredWrapped(UiHelpers.Warn,
                 $"Contradicts the game data: pulled from behind {profile.RearPulls} time(s), " +
                 "so it is treated as detecting in all directions.");
         }
@@ -432,7 +432,7 @@ public sealed class MobViewerTool : ITool
             _                    => UiHelpers.Warn,
         };
 
-        UiHelpers.Colored(verdictColour, model.Type switch
+        UiHelpers.ColoredWrapped(verdictColour, model.Type switch
         {
             DetectionType.Cone   => $"CONE — {model.Range:F1}y out to {model.FullConeDegrees:F0}° wide",
             DetectionType.Radius => $"RADIUS — {model.Range:F1}y in every direction",
@@ -483,7 +483,7 @@ public sealed class MobViewerTool : ITool
             "shows up as exactly that.");
 
         ImGui.Spacing();
-        UiHelpers.Colored(UiHelpers.Accent, AggroLearningStore.DescribeMeasuredShape(profile));
+        UiHelpers.ColoredWrapped(UiHelpers.Accent, AggroLearningStore.DescribeMeasuredShape(profile));
         ImGui.Spacing();
 
         AggroLearningStore.EnsureBins(profile);

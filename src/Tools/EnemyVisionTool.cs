@@ -637,7 +637,7 @@ public sealed class EnemyVisionTool : ITool
 
         if (_threateningCount > 0)
         {
-            UiHelpers.Colored(UiHelpers.Warn, $"{_threateningCount} enemy/enemies could currently detect you.");
+            UiHelpers.ColoredWrapped(UiHelpers.Warn, $"{_threateningCount} enemy/enemies could currently detect you.");
             ImGui.Spacing();
         }
 
@@ -718,7 +718,7 @@ public sealed class EnemyVisionTool : ITool
             return;
         }
 
-        UiHelpers.Colored(UiHelpers.Good,
+        UiHelpers.ColoredWrapped(UiHelpers.Good,
             $"Recording. {_trainer.SamplesThisSession} kept / {_trainer.RejectedThisSession} skipped this " +
             $"session, {_store.TotalSamples} total across {_store.All.Count} mob type(s).");
 
@@ -735,7 +735,7 @@ public sealed class EnemyVisionTool : ITool
             "Prints a line whenever a pull is recorded or skipped, with the reason. " +
             "Leave this on while training so you can see it working without opening this panel.");
 
-        UiHelpers.Colored(UiHelpers.Accent,
+        UiHelpers.ColoredWrapped(UiHelpers.Accent,
             $"{_trainer.SafeObservationsThisSession} non-detection(s) recorded this session.");
 
         UiHelpers.Muted(
@@ -761,7 +761,9 @@ public sealed class EnemyVisionTool : ITool
         {
             foreach (var entry in events)
             {
-                UiHelpers.Colored(entry.Accepted ? UiHelpers.Good : UiHelpers.Dim,
+                // Activity lines are full sentences and easily the longest text
+                // in the panel — these must wrap.
+                UiHelpers.ColoredWrapped(entry.Accepted ? UiHelpers.Good : UiHelpers.Dim,
                     (entry.Accepted ? "+ " : "- ") + entry.Message);
             }
         }
@@ -818,8 +820,8 @@ public sealed class EnemyVisionTool : ITool
 
     internal static string DescribeConfidence(AggroConfidence confidence, int samples) => confidence switch
     {
-        AggroConfidence.Confident => $"Solved ({samples})",
-        AggroConfidence.Learning  => $"Learning ({samples}/{AggroLearningStore.MinSamplesForConfident})",
+        AggroConfidence.Confident => $"Solved ({samples} pulls)",
+        AggroConfidence.Learning  => $"Learning ({samples} pull{(samples == 1 ? "" : "s")})",
         _                         => "No data",
     };
 

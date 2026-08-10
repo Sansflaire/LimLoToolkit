@@ -25,11 +25,23 @@ public static class UiHelpers
         _                               => Bad,
     };
 
-    /// <summary>Coloured text, one call.</summary>
+    /// <summary>
+    /// Coloured text on a single line. For short labels only — table cells,
+    /// legends, counts. Anything sentence-length must use
+    /// <see cref="ColoredWrapped"/> or it runs off the panel edge.
+    /// </summary>
     public static void Colored(Vector4 color, string text)
     {
         ImGui.PushStyleColor(ImGuiCol.Text, color);
         ImGui.TextUnformatted(text);
+        ImGui.PopStyleColor();
+    }
+
+    /// <summary>Coloured text that wraps to the panel width.</summary>
+    public static void ColoredWrapped(Vector4 color, string text)
+    {
+        ImGui.PushStyleColor(ImGuiCol.Text, color);
+        ImGui.TextWrapped(text);
         ImGui.PopStyleColor();
     }
 
