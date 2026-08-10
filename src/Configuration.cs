@@ -117,6 +117,24 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>Name prefix a mob must carry to be tracked. Case-insensitive.</summary>
     public string TrackedNamePrefix { get; set; } = "Crescent";
 
+    /// <summary>
+    /// Hide and skip enemies whose Knowledge level is below the player's, since
+    /// the Occult Crescent suppresses their aggro entirely.
+    ///
+    /// This is a data-integrity guard as much as a decluttering one: an enemy
+    /// that cannot aggro would otherwise generate an endless stream of "stood
+    /// next to it unnoticed" observations, teaching the model that its
+    /// detection range is tiny when in truth it is only level-suppressed.
+    /// </summary>
+    public bool IgnoreOutleveledEnemies { get; set; } = true;
+
+    /// <summary>
+    /// How far above an enemy's Knowledge level the player must be before it is
+    /// treated as harmless. The Crescent stops aggro at 1 level above, so 1 is
+    /// the correct default; raise it to be cautious.
+    /// </summary>
+    public int OutlevelMargin { get; set; } = 1;
+
     public bool IsToolEnabled(string id) =>
         !EnabledTools.TryGetValue(id, out var enabled) || enabled;
 

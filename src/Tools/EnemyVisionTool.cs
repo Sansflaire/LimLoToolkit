@@ -84,6 +84,8 @@ public sealed class EnemyVisionTool : ITool
     private bool        _inOccultCrescent;
     private int         _threateningCount;
     private bool        _trainingWasEnabled;
+    private int?        _playerForayLevel;
+    private int         _outleveledCount;
 
     public EnemyVisionTool(Configuration config, AggroLearningStore store, AggroTrainer trainer)
     {
@@ -137,6 +139,18 @@ public sealed class EnemyVisionTool : ITool
             var fallbackRadius = Math.Clamp(_config.EnemyVisionRadius, MinRadius, MaxRadius);
             var fallbackCone   = Math.Clamp(_config.EnemyVisionConeDegrees, MinCone, MaxCone);
 
+            // Knowledge level. In the Crescent an enemy one level below the
+            // player cannot aggro at all, so those are skipped entirely — both
+            // to cut clutter and to keep them from feeding the trainer endless
+            // meaningless "it did not notice me" evidence.
+            var playerForay = ForayLevel.TryGet(player);
+
+            if (playerForay != _playerForayLevel)
+                Plugin.Log.Information($"[EnemyVision] Player Knowledge level read as {playerForay?.ToString() ?? "none"}.");
+
+            _playerForayLevel = playerForay;
+            var outleveled  = 0;
+
             var tracked = new List<TrackedEnemy>();
 
             foreach (var obj in Plugin.ObjectTable)
@@ -164,6 +178,17 @@ public sealed class EnemyVisionTool : ITool
                 // Still handed to the trainer so a pull from it is reported
                 // rather than vanishing — silence here is indistinguishable
                 // from the trainer being broken.
+                var enemyForay = ForayLevel.TryGet(obj);
+
+                if (_config.IgnoreOutleveledEnemies
+                    && ForayLevel.IsHarmless(playerForay, enemyForay, _config.OutlevelMargin))
+                {
+                    // Skipped completely: no shape, no tracking, no samples.
+                    // Its non-detections say nothing about its detection shape.
+                    outleveled++;
+                    continue;
+                }
+
                 var ignored = _store.ShouldSkip(obj.BaseId, name);
 
                 tracked.Add(new TrackedEnemy(
@@ -249,6 +274,8 @@ public sealed class EnemyVisionTool : ITool
             }
 
             shapes.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+
+            _outleveledCount = outleveled;
 
             if (_config.AggroTrainingEnabled)
                 _trainer.Tick(player, tracked, territory);
@@ -456,6 +483,31 @@ public sealed class EnemyVisionTool : ITool
             Plugin.SaveConfiguration();
         }
 
+        var ignoreOutleveled = _config.IgnoreOutleveledEnemies;
+        if (ImGui.Checkbox("Ignore enemies you outlevel", ref ignoreOutleveled))
+        {
+            _config.IgnoreOutleveledEnemies = ignoreOutleveled;
+            Plugin.SaveConfiguration();
+        }
+        UiHelpers.HelpMarker(
+            "In the Occult Crescent an enemy stops aggroing once you are just ONE Knowledge level " +
+            "above it — far tighter than the overworld's eleven. Those enemies are hidden and, " +
+            "importantly, excluded from training: an enemy that cannot aggro would otherwise fill " +
+            "its profile with \"it did not notice me\" evidence that reflects level suppression, " +
+            "not its real detection range.");
+
+        if (_config.IgnoreOutleveledEnemies)
+        {
+            ImGui.SetNextItemWidth(120f);
+            var margin = _config.OutlevelMargin;
+            if (ImGui.InputInt("Levels above to ignore", ref margin))
+            {
+                _config.OutlevelMargin = Math.Clamp(margin, 1, ForayLevel.MaxKnowledgeLevel);
+                Plugin.SaveConfiguration();
+            }
+            UiHelpers.HelpMarker("1 matches the game's own rule. Raise it to keep borderline enemies visible.");
+        }
+
         var autoIgnore = _config.AutoIgnoreNonMatchingNames;
         if (ImGui.Checkbox("Only track mobs named with a prefix", ref autoIgnore))
         {
@@ -534,6 +586,15 @@ public sealed class EnemyVisionTool : ITool
         if (_store.IgnoredCount > 0)
         {
             UiHelpers.Muted($"{_store.IgnoredCount} mob type(s) ignored and hidden. Manage them in Mob Viewer.");
+            ImGui.Spacing();
+        }
+
+        if (_playerForayLevel is { } knowledge)
+        {
+            UiHelpers.Muted($"Your Knowledge level: {knowledge}"
+                            + (_outleveledCount > 0
+                                ? $" — {_outleveledCount} nearby enemy/enemies cannot aggro you and are hidden."
+                                : "."));
             ImGui.Spacing();
         }
 

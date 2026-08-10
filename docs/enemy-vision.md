@@ -188,6 +188,44 @@ Viewer. So the `IsOmnidirectional` reading is not merely trusted — it gets
 checked against real behaviour for every mob you meet, which is the empirical
 answer to "how accurate is sight vs sound".
 
+## Level suppression — enemies that cannot aggro at all
+
+Aggro is switched off entirely by level difference, and the threshold in a foray
+zone is far tighter than in the open world:
+
+| Zone | Player must be this far above the enemy for aggro to stop |
+|------|----------------------------------------------------------|
+| Overworld | **11+ levels** |
+| Eureka | **2+ elemental levels** |
+| **Occult Crescent** | **1+ Knowledge level** |
+
+At the Knowledge 40 cap that makes most of the zone permanently harmless.
+
+**Reading it.** `BattleChara.ForayInfo.Level` carries the foray level —
+Knowledge here, Elemental in Eureka, Resistance rank in Bozja — and it is
+populated for **both the player and field enemies**, which is what makes the
+comparison possible at all. Verified live on 2026-08-09: the player's value read
+back as 40, matching the in-game Knowledge level.
+
+Enemies the player outlevels are skipped completely: no shape drawn, no tracking,
+no samples.
+
+> **This is a correctness guard, not just decluttering.** An enemy that cannot
+> aggro would otherwise feed the trainer an unbroken run of "stood beside it
+> unnoticed" observations. Those look exactly like evidence of a tiny detection
+> radius and are nothing of the sort — the enemy is muzzled by level, not blind.
+> Left unchecked they would quietly poison the profile of every low-level mob in
+> the zone, and the poisoning would look like legitimate data.
+
+The margin is configurable and defaults to 1, matching the game's own rule.
+Unknown levels never count as harmless — safety is never assumed from missing
+data.
+
+Sources: [Aggression (FFXIV Console Games Wiki)](https://ffxiv.consolegameswiki.com/wiki/Aggression).
+The `ForayInfo` read follows the same approach as
+[BOCCHI](https://github.com/OhKannaDuh/BOCCHI)'s `KnowledgeThreat`, which uses it
+for its Ninja Hide logic and pins the Knowledge cap at 40.
+
 ## Ignoring irrelevant mobs
 
 Mobs can be marked irrelevant by `BNpcBase` id, from the Enemy Vision table or
