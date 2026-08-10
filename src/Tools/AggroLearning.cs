@@ -879,9 +879,23 @@ public sealed class AggroLearningStore
 
         // The narrowest angle at which we got closer than the proven range and
         // still went unnoticed. That angle must sit outside a forward arc.
+        // Widest slice that has ever produced a pull. Everything up to here is
+        // inside the arc by definition and no later reasoning may exclude it.
+        var widestPullBinEdge = 0f;
+        for (var i = 0; i < AngleBins; i++)
+            if (profile.BinSamples[i] > 0)
+                widestPullBinEdge = MathF.Max(widestPullBinEdge, (i + 1) * BinWidthDegrees);
+
         var    safeOutsideAngle = float.MaxValue;
         for (var i = 0; i < AngleBins; i++)
         {
+            // A slice that has produced a pull IS inside the arc. Letting its
+            // own safe reading mark it "outside" was cutting the arc back
+            // across the very pull that proves it belongs — the cause of aggro
+            // happening beyond the drawn cone.
+            if (profile.BinSamples[i] > 0)
+                continue;
+
             var safe = profile.BinMinSafeDistance[i];
             if (safe <= 0f || safe >= range - SafeTightenEpsilon)
                 continue;
@@ -895,8 +909,12 @@ public sealed class AggroLearningStore
 
         if (safeOutsideAngle < float.MaxValue)
         {
-            // Edge lies between the widest detection and the closest safe angle.
+            // Edge lies between the widest detection and the closest safe angle,
+            // but never inside a slice that has pulled. THE INVARIANT: if it
+            // caught you at that angle and distance, the drawing covers that
+            // angle and distance. Nothing here is allowed to violate it.
             var half = Math.Clamp((widestPullAngle + safeOutsideAngle) * 0.5f, 5f, 180f);
+            half = MathF.Max(half, widestPullBinEdge);
 
             var bounded = BoundRangeBySafeStands(profile, range, half, out var shrunk);
 
@@ -922,7 +940,7 @@ public sealed class AggroLearningStore
                     : $"noticed from {widestPullAngle:F0}° off its facing — all directions");
         }
 
-        var unknownHalf     = MathF.Max(widestPullAngle, 45f);
+        var unknownHalf     = MathF.Max(MathF.Max(widestPullAngle, 45f), widestPullBinEdge);
         var unknownBounded  = BoundRangeBySafeStands(profile, range, unknownHalf, out _);
 
         return new DetectionModel(
