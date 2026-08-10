@@ -333,34 +333,57 @@ public sealed class MobViewerTool : ITool
 
         AggroLearningStore.EnsureBins(profile);
 
-        if (ImGui.BeginTable("##limlo-envelope", 3, ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.RowBg))
+        if (ImGui.BeginTable("##limlo-envelope", 5, ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.RowBg))
         {
             ImGui.TableSetupColumn("Angle");
-            ImGui.TableSetupColumn("Reach");
-            ImGui.TableSetupColumn("Pulls");
+            ImGui.TableSetupColumn("Pulled at");
+            ImGui.TableSetupColumn("Safe at");
+            ImGui.TableSetupColumn("Best guess");
+            ImGui.TableSetupColumn("Certainty");
             ImGui.TableHeadersRow();
 
             for (var bin = 0; bin < AggroLearningStore.AngleBins; bin++)
             {
-                var samples = profile.BinSamples[bin];
+                var pulls = profile.BinSamples[bin];
+                var safe  = profile.BinMinSafeDistance[bin];
 
                 ImGui.TableNextRow();
 
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(AggroLearningStore.BinLabel(bin));
 
+                // Lower bound: it reached us from here.
                 ImGui.TableNextColumn();
-                if (samples > 0)
-                    UiHelpers.Colored(UiHelpers.Good, $"{profile.BinMaxDistance[bin]:F1}y");
-                else
-                    UiHelpers.Colored(UiHelpers.Bad, "no data");
+                if (pulls > 0) UiHelpers.Colored(UiHelpers.Good, $"{profile.BinMaxDistance[bin]:F1}y");
+                else           UiHelpers.Colored(UiHelpers.Dim, "-");
+
+                // Upper bound: we stood here unnoticed.
+                ImGui.TableNextColumn();
+                if (safe > 0f) UiHelpers.Colored(UiHelpers.Accent, $"<{safe:F1}y");
+                else           UiHelpers.Colored(UiHelpers.Dim, "-");
 
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(samples.ToString());
+                var guess = AggroLearningStore.RadiusAtAngle(profile, bin * AggroLearningStore.BinWidthDegrees + 1f);
+                ImGui.TextUnformatted(guess is { } g ? $"{g:F1}y" : "-");
+
+                ImGui.TableNextColumn();
+                if (AggroLearningStore.BinContradicts(profile, bin))
+                    UiHelpers.Colored(UiHelpers.Warn, "conflicting");
+                else if (AggroLearningStore.BinUncertainty(profile, bin) is { } spread)
+                    UiHelpers.Colored(spread <= 1.5f ? UiHelpers.Good : UiHelpers.Warn, $"+/- {spread / 2f:F1}y");
+                else if (pulls > 0 || safe > 0f)
+                    UiHelpers.Colored(UiHelpers.Warn, "one-sided");
+                else
+                    UiHelpers.Colored(UiHelpers.Bad, "none");
             }
 
             ImGui.EndTable();
         }
+
+        UiHelpers.Muted(
+            "A slice is pinned down once it has BOTH a pull (lower bound) and a safe stand " +
+            "(upper bound) close together. \"Conflicting\" means a pull was recorded further out " +
+            "than somewhere you later stood unnoticed — usually an old bad sample.");
 
         UiHelpers.Muted(
             $"{AggroLearningStore.FilledBins(profile)} of {AggroLearningStore.AngleBins} slices covered " +

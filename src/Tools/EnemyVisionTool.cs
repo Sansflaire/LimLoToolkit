@@ -636,10 +636,19 @@ public sealed class EnemyVisionTool : ITool
             "Prints a line whenever a pull is recorded or skipped, with the reason. " +
             "Leave this on while training so you can see it working without opening this panel.");
 
+        UiHelpers.Colored(UiHelpers.Accent,
+            $"{_trainer.SafeObservationsThisSession} non-detection(s) recorded this session.");
+
         UiHelpers.Muted(
-            "Only fresh pulls count: you must be OUT OF COMBAT, the mob must not already be " +
-            "fighting, and only the first pull per second is kept. So pull one mob at a time " +
-            "and disengage between pulls — running a whole train records one sample, not ten.");
+            "Two kinds of evidence are gathered. A pull proves the reach is at least that far. " +
+            "Standing near a mob for a moment WITHOUT being noticed proves it is less than that " +
+            "— so walking around an idle mob teaches it just as much as pulling does, and the " +
+            "estimate can shrink as well as grow.");
+
+        UiHelpers.Muted(
+            "A pull is only rejected if the mob was already fighting, or if another mob you are " +
+            "engaged with is within 12y of it and could have linked it in. Being in combat " +
+            "yourself no longer disqualifies a pull.");
 
         ImGui.Spacing();
         UiHelpers.SectionHeader("Activity");

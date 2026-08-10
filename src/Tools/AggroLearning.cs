@@ -79,6 +79,20 @@ public sealed class AggroProfile
     /// </summary>
     public List<float> BinMaxDistance { get; set; } = new();
     public List<int>   BinSamples     { get; set; } = new();
+
+    /// <summary>
+    /// NEGATIVE evidence: the closest we have stood in each slice, for long
+    /// enough to be noticed, and were NOT detected. 0 means none recorded.
+    ///
+    /// This is what lets the model shrink. Pulls alone can only ever push the
+    /// estimate outwards, so one bad sample inflates a mob forever. A pull at
+    /// distance p proves the reach is at least p; standing unnoticed at
+    /// distance s proves it is less than s. Together they bracket the true
+    /// boundary between them, which is both a better estimate and an honest
+    /// measure of how well we actually know it.
+    /// </summary>
+    public List<float> BinMinSafeDistance { get; set; } = new();
+    public List<int>   BinSafeSamples     { get; set; } = new();
 }
 
 /// <summary>
@@ -140,8 +154,77 @@ public sealed class AggroLearningStore
     /// <summary>Old configs predate the bins; make sure they are the right size.</summary>
     public static void EnsureBins(AggroProfile profile)
     {
-        while (profile.BinMaxDistance.Count < AngleBins) profile.BinMaxDistance.Add(0f);
-        while (profile.BinSamples.Count     < AngleBins) profile.BinSamples.Add(0);
+        while (profile.BinMaxDistance.Count     < AngleBins) profile.BinMaxDistance.Add(0f);
+        while (profile.BinSamples.Count         < AngleBins) profile.BinSamples.Add(0);
+        while (profile.BinMinSafeDistance.Count < AngleBins) profile.BinMinSafeDistance.Add(0f);
+        while (profile.BinSafeSamples.Count     < AngleBins) profile.BinSafeSamples.Add(0);
+    }
+
+    /// <summary>
+    /// Records standing unnoticed at <paramref name="distance"/> in the slice
+    /// covering <paramref name="angleDegrees"/>. Proves the reach there is less
+    /// than that.
+    /// </summary>
+    /// <summary>Returns true only when this tightened the known bound.</summary>
+    public bool AddSafeObservation(uint baseId, string name, bool sheetOmnidirectional,
+                                   ushort territoryId, float hitboxRadius,
+                                   float distance, float angleDegrees)
+    {
+        if (!_byBaseId.TryGetValue(baseId, out var profile))
+        {
+            profile = new AggroProfile
+            {
+                BaseId               = baseId,
+                Name                 = name,
+                SheetOmnidirectional = sheetOmnidirectional,
+                TerritoryId          = territoryId,
+                HitboxRadius         = hitboxRadius,
+            };
+            _byBaseId[baseId] = profile;
+        }
+
+        EnsureBins(profile);
+
+        var bin      = BinFor(angleDegrees);
+        var existing = profile.BinMinSafeDistance[bin];
+
+        // Only a CLOSER safe stand teaches us anything. Standing further out
+        // than a bound we already have is not new information, so this stays
+        // quiet instead of firing every frame you idle near a mob.
+        if (existing > 0f && distance >= existing)
+            return false;
+
+        profile.BinMinSafeDistance[bin] = distance;
+        profile.BinSafeSamples[bin]++;
+        return true;
+    }
+
+    /// <summary>
+    /// True when a slice's positive and negative evidence disagree — a pull
+    /// recorded further out than a distance we later stood at unnoticed. Means
+    /// one of the two is noise, usually an old bad pull.
+    /// </summary>
+    public static bool BinContradicts(AggroProfile profile, int bin)
+    {
+        EnsureBins(profile);
+
+        var safe = profile.BinMinSafeDistance[bin];
+        return safe > 0f && profile.BinSamples[bin] > 0 && safe <= profile.BinMaxDistance[bin];
+    }
+
+    /// <summary>
+    /// How tightly a slice is pinned down: the gap between the furthest pull
+    /// and the closest safe stand. Null when either side is missing.
+    /// </summary>
+    public static float? BinUncertainty(AggroProfile profile, int bin)
+    {
+        EnsureBins(profile);
+
+        var safe = profile.BinMinSafeDistance[bin];
+        if (safe <= 0f || profile.BinSamples[bin] == 0)
+            return null;
+
+        return MathF.Max(0f, safe - profile.BinMaxDistance[bin]);
     }
 
     public static int FilledBins(AggroProfile profile)
@@ -167,23 +250,46 @@ public sealed class AggroLearningStore
         EnsureBins(profile);
 
         var bin = BinFor(Math.Clamp(angleDegrees, 0f, 180f));
-        if (profile.BinSamples[bin] > 0)
-            return profile.BinMaxDistance[bin];
 
-        // Walk outwards to the closest filled slice on either side.
+        var direct = ReachIn(profile, bin);
+        if (direct.HasValue)
+            return direct;
+
+        // Walk outwards to the closest slice that has any evidence at all.
         for (var offset = 1; offset < AngleBins; offset++)
         {
-            var low  = bin - offset;
-            var high = bin + offset;
+            if (bin - offset >= 0 && ReachIn(profile, bin - offset) is { } low)
+                return low;
 
-            if (low >= 0 && profile.BinSamples[low] > 0)
-                return profile.BinMaxDistance[low];
-
-            if (high < AngleBins && profile.BinSamples[high] > 0)
-                return profile.BinMaxDistance[high];
+            if (bin + offset < AngleBins && ReachIn(profile, bin + offset) is { } high)
+                return high;
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Best estimate of the reach in one slice, from both kinds of evidence.
+    ///
+    /// Pulls give a lower bound, safe stands give an upper bound, so the truth
+    /// sits between them and the midpoint is the best single guess. With only
+    /// pulls we can just report the furthest one. With only safe stands we know
+    /// the reach is under that, so we report just inside it rather than
+    /// pretending to know nothing.
+    /// </summary>
+    private static float? ReachIn(AggroProfile profile, int bin)
+    {
+        var pulled = profile.BinSamples[bin] > 0 ? profile.BinMaxDistance[bin] : (float?)null;
+        var safe   = profile.BinMinSafeDistance[bin] > 0f ? profile.BinMinSafeDistance[bin] : (float?)null;
+
+        return (pulled, safe) switch
+        {
+            ({ } p, { } s) when s > p => (p + s) * 0.5f,   // bracketed: split the difference
+            ({ } p, { } s)            => MathF.Min(p, s),  // contradictory: take the cautious one
+            ({ } p, null)             => p,
+            (null, { } s)             => MathF.Max(0f, s - 0.5f),
+            _                         => null,
+        };
     }
 
     private readonly Configuration _config;

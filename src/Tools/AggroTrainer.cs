@@ -49,8 +49,26 @@ public sealed class AggroTrainer
     /// <summary>Rotation change across the window that invalidates the angle.</summary>
     private const float MaxRotationDriftDegrees = 30f;
 
-    /// <summary>Only the first pull in this window is recorded.</summary>
-    private const long BurstWindowMs = 1000;
+    /// <summary>
+    /// Debounce so one pull event cannot be counted twice. Deliberately short:
+    /// walking into a camp can legitimately trip several mobs at once, and each
+    /// is a real proximity detection. Link contamination is handled by distance
+    /// instead — see <see cref="LinkRadius"/>.
+    /// </summary>
+    private const long BurstWindowMs = 250;
+
+    /// <summary>
+    /// Links propagate between mobs standing near each other. A mob that pulls
+    /// while already-engaged mobs are within this distance of it is assumed to
+    /// have been dragged in rather than to have noticed the player.
+    /// </summary>
+    private const float LinkRadius = 12f;
+
+    /// <summary>Time standing still and unnoticed before that counts as evidence.</summary>
+    private const long SafeDwellMs = 1500;
+
+    /// <summary>Do not bother recording safe stands beyond this distance.</summary>
+    private const float SafeProbeMaxDistance = 20f;
 
     /// <summary>
     /// Samples beyond this are nonsense and get dropped. Real FFXIV aggro is
@@ -86,6 +104,7 @@ public sealed class AggroTrainer
     private readonly Dictionary<ulong, List<Snapshot>> _enemyHistory  = new();
     private readonly Dictionary<ulong, bool>           _wasTargetingMe = new();
     private readonly Dictionary<ulong, bool>           _wasInCombat    = new();
+    private readonly Dictionary<ulong, long>           _safeDwellSince = new();
 
     private bool _playerWasInCombat;
     private long _lastSampleAt;
@@ -121,6 +140,21 @@ public sealed class AggroTrainer
     /// Records one line of activity and, when enabled, echoes it to chat so a
     /// pull is visible without the toolkit window being open on this panel.
     /// </summary>
+    /// <summary>Panel-only note. Never reaches chat.</summary>
+    private void LogQuiet(string message)
+    {
+        SafeObservationsThisSession++;
+
+        _events.Insert(0, new TrainingEvent(message, true));
+        while (_events.Count > MaxLoggedEvents)
+            _events.RemoveAt(_events.Count - 1);
+
+        Plugin.Log.Information($"[AggroTrainer] SAFE {message}");
+    }
+
+    /// <summary>Non-detections recorded this session.</summary>
+    public int SafeObservationsThisSession { get; private set; }
+
     private void Log(string message, bool accepted)
     {
         if (accepted)
@@ -220,9 +254,17 @@ public sealed class AggroTrainer
                 }
                 else
                 {
-                    TryRecord(tracked, history, playerHitbox, playerInCombat, wasFighting, territoryId, now);
+                    TryRecord(tracked, history, playerHitbox, playerInCombat, wasFighting, territoryId, now, enemies);
                 }
             }
+
+            // Negative evidence: standing unnoticed proves the reach at this
+            // angle is SHORTER than where we are. Without it the model can only
+            // ever grow, so one bad pull inflates a mob permanently.
+            if (!tracked.Ignored && !targetingMe && !tracked.InCombat && !playerInCombat)
+                TrySafeObservation(tracked, player, playerHitbox, territoryId, now);
+            else
+                _safeDwellSince.Remove(id);
 
             _wasTargetingMe[id] = targetingMe;
             _wasInCombat[id]    = tracked.InCombat;
@@ -247,6 +289,27 @@ public sealed class AggroTrainer
         _playerWasInCombat = playerInCombat;
     }
 
+    /// <summary>
+    /// True when an already-engaged mob sits close enough to this one to have
+    /// linked it in, which makes the pull useless as a detection measurement.
+    /// </summary>
+    private bool IsLikelyLink(TrackedEnemy candidate, IReadOnlyList<TrackedEnemy> all)
+    {
+        foreach (var other in all)
+        {
+            if (other.Object.GameObjectId == candidate.Object.GameObjectId)
+                continue;
+
+            if (!other.InCombat)
+                continue;
+
+            if (Vector3.Distance(other.Object.Position, candidate.Object.Position) <= LinkRadius)
+                return true;
+        }
+
+        return false;
+    }
+
     private void TryRecord(
         TrackedEnemy   tracked,
         List<Snapshot> enemyHistory,
@@ -254,14 +317,27 @@ public sealed class AggroTrainer
         bool           playerInCombat,
         bool           enemyWasInCombat,
         ushort         territoryId,
-        long           now)
+        long           now,
+        IReadOnlyList<TrackedEnemy> allEnemies)
     {
         // Already fighting? Then this is a target switch or a link, not a fresh
         // detection. _playerWasInCombat is the previous frame's value on purpose:
         // the pull itself flips the player into combat on the very same frame.
-        if (_playerWasInCombat || enemyWasInCombat)
+        // A mob that was already fighting did not just notice us.
+        if (enemyWasInCombat)
         {
-            Log($"{tracked.Name} — you were already in combat, so this is a link or a target switch, not a detection.", false);
+            Log($"{tracked.Name} — it was already in combat, not a fresh detection.", false);
+            return;
+        }
+
+        // Being in combat ourselves is NOT disqualifying. In the Crescent you
+        // are in combat almost continuously, and rejecting on that alone threw
+        // away nearly every usable pull. What actually contaminates the data is
+        // a LINK — so reject only when an already-engaged mob is close enough
+        // to have dragged this one in.
+        if (_playerWasInCombat && IsLikelyLink(tracked, allEnemies))
+        {
+            Log($"{tracked.Name} — another mob you are fighting is within {LinkRadius:F0}y, so this is a link.", false);
             return;
         }
 
@@ -328,6 +404,54 @@ public sealed class AggroTrainer
 
         Log($"{tracked.Name} — {detail}. Sample {count}/{AggroLearningStore.MinSamplesForConfident}"
             + (solved ? ", SOLVED." : "."), true);
+    }
+
+    /// <summary>
+    /// Records "I stood here and it did not notice me" once the player has been
+    /// in range long enough for the mob to have had a fair chance to react.
+    /// Only fires when it tightens the known bound, so idling near a mob does
+    /// not spam identical evidence.
+    /// </summary>
+    private void TrySafeObservation(
+        TrackedEnemy tracked,
+        IGameObject  player,
+        float        playerHitbox,
+        ushort       territoryId,
+        long         now)
+    {
+        var id  = tracked.Object.GameObjectId;
+        var gap = Vector3.Distance(player.Position, tracked.Object.Position)
+                  - tracked.HitboxRadius - playerHitbox;
+
+        if (gap < 0f || gap > SafeProbeMaxDistance)
+        {
+            _safeDwellSince.Remove(id);
+            return;
+        }
+
+        if (!_safeDwellSince.TryGetValue(id, out var since))
+        {
+            _safeDwellSince[id] = now;
+            return;
+        }
+
+        if (now - since < SafeDwellMs)
+            return;
+
+        var angle = AggroLearningStore.AngleOffFacing(
+            tracked.Object.Position, tracked.Object.Rotation, player.Position);
+
+        var tightened = _store.AddSafeObservation(
+            tracked.BaseId, tracked.Name, tracked.SheetOmnidirectional,
+            territoryId, tracked.HitboxRadius, gap, angle);
+
+        if (!tightened)
+            return;
+
+        _store.Save();
+
+        // Panel only, not chat: useful to see, too frequent to announce.
+        LogQuiet($"{tracked.Name} — stood {gap:F1}y at {angle:F0}° unnoticed, so its reach there is under {gap:F1}y.");
     }
 
     private static void Append(List<Snapshot> history, Snapshot snapshot, long now)
