@@ -53,10 +53,12 @@ public sealed class MobViewerTool : ITool
     private ushort  _territory;
     private Vector3 _playerPos;
 
-    /// <summary>Draw the selected mob's known ground out in the world.</summary>
-    private bool _highlightSelectedInWorld = true;
+    /// <summary>Put the selected mob's known spots on the in-game map.</summary>
+    private bool _markSelectedOnMap = true;
 
     private static readonly Vector4 SightingColor = new(0.35f, 0.85f, 1.00f, 0.90f);
+
+    private readonly MapMarkers _mapMarkers = new();
 
     /// <summary>Base ids currently in the object table, refreshed each tick.</summary>
     private HashSet<uint> _nearby = new();
@@ -86,6 +88,15 @@ public sealed class MobViewerTool : ITool
             var territory = (ushort)Plugin.ClientState.TerritoryType;
             _territory    = territory;
             _playerPos    = Plugin.ObjectTable.LocalPlayer?.Position ?? Vector3.Zero;
+
+            // Keep the game map in step with the selection. No-ops unless the
+            // selection, zone, or map visibility actually changed.
+            var selected = _store.Find(_selectedBaseId);
+            _mapMarkers.Sync(
+                _selectedBaseId,
+                territory,
+                selected?.Sightings ?? (IReadOnlyList<Sighting>)Array.Empty<Sighting>(),
+                _markSelectedOnMap);
 
             foreach (var obj in Plugin.ObjectTable)
             {
@@ -187,64 +198,6 @@ public sealed class MobViewerTool : ITool
         _config.IgnoreOutleveledEnemies
         && profile.ForayLevel > 0
         && ForayLevel.IsHarmless(_playerForayLevel, profile.ForayLevel, _config.OutlevelMargin);
-
-    /// <summary>
-    /// Rings each recorded spot for the selected mob out in the world, so the
-    /// area it occupies is visible while walking rather than only on a panel.
-    /// Runs regardless of window state, like every other overlay.
-    /// </summary>
-    public void DrawOverlay()
-    {
-        if (!_highlightSelectedInWorld || _selectedBaseId == 0)
-            return;
-
-        var profile = _store.Find(_selectedBaseId);
-        if (profile == null || profile.Sightings.Count == 0)
-            return;
-
-        var drawList = ImGui.GetForegroundDrawList();
-        var colour   = ImGui.ColorConvertFloat4ToU32(SightingColor);
-
-        foreach (var sighting in profile.Sightings)
-        {
-            if (sighting.Territory != _territory)
-                continue;
-
-            var centre = new Vector3(sighting.X, sighting.Y, sighting.Z);
-
-            // Far-away spots would project to noise on screen.
-            if (Vector3.Distance(_playerPos, centre) > 120f)
-                continue;
-
-            DrawGroundRing(drawList, centre, 4f, colour);
-        }
-    }
-
-    private static void DrawGroundRing(ImDrawListPtr drawList, Vector3 centre, float radius, uint colour)
-    {
-        const int segments = 24;
-        Vector2? previous = null;
-
-        for (var i = 0; i <= segments; i++)
-        {
-            var angle = i / (float)segments * MathF.Tau;
-            var point = new Vector3(
-                centre.X + radius * MathF.Sin(angle),
-                centre.Y,
-                centre.Z + radius * MathF.Cos(angle));
-
-            if (!Plugin.GameGui.WorldToScreen(point, out var screen))
-            {
-                previous = null;
-                continue;
-            }
-
-            if (previous is { } prev)
-                drawList.AddLine(prev, screen, colour, 2f);
-
-            previous = screen;
-        }
-    }
 
     public void Draw()
     {
@@ -348,7 +301,10 @@ public sealed class MobViewerTool : ITool
                     irrelevant ? UiHelpers.Dim : UiHelpers.ConfidenceColor(confidence));
                 var label = string.IsNullOrEmpty(profile.Name) ? $"#{profile.BaseId}" : profile.Name;
                 if (ImGui.Selectable($"{label}###limlo-mob-{profile.BaseId}", profile.BaseId == _selectedBaseId))
+                {
                     _selectedBaseId = profile.BaseId;
+                    _mapMarkers.Invalidate();
+                }
                 ImGui.PopStyleColor();
 
                 if (_nearby.Contains(profile.BaseId))
@@ -384,9 +340,22 @@ public sealed class MobViewerTool : ITool
             return;
         }
 
-        var highlight = _highlightSelectedInWorld;
-        if (ImGui.Checkbox("Ring these spots in the world", ref highlight))
-            _highlightSelectedInWorld = highlight;
+        var markOnMap = _markSelectedOnMap;
+        if (ImGui.Checkbox("Mark these on the game map", ref markOnMap))
+        {
+            _markSelectedOnMap = markOnMap;
+            _mapMarkers.Invalidate();
+        }
+        UiHelpers.HelpMarker(
+            $"Places markers on the in-game map for the selected mob, up to {MapMarkers.MaxMarkers}. " +
+            "Open your map to see them. Nothing is drawn over the world.");
+
+        if (_markSelectedOnMap)
+        {
+            UiHelpers.Muted(MapMarkers.IsMapOpen()
+                ? $"{_mapMarkers.PlacedCount} marker(s) on the map."
+                : "Open your map to place the markers.");
+        }
 
         // Fit to the spread of sightings plus the player, with a floor so a
         // single point does not blow up to fill the canvas.

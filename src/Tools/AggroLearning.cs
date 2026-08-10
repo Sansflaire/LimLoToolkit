@@ -898,22 +898,82 @@ public sealed class AggroLearningStore
             // Edge lies between the widest detection and the closest safe angle.
             var half = Math.Clamp((widestPullAngle + safeOutsideAngle) * 0.5f, 5f, 180f);
 
+            var bounded = BoundRangeBySafeStands(profile, range, half, out var shrunk);
+
             return new DetectionModel(
-                DetectionType.Cone, range, half,
-                $"noticed out to {range:F1}y and as wide as {widestPullAngle:F0}°, but slipped inside "
-                + $"at {safeOutsideAngle:F0}° — a forward arc");
+                DetectionType.Cone, bounded, half,
+                shrunk
+                    ? $"passed through the arc at {bounded:F1}y unnoticed, so its reach is under that; "
+                      + $"blind past {safeOutsideAngle:F0}° — a forward arc"
+                    : $"noticed out to {bounded:F1}y and as wide as {widestPullAngle:F0}°, but slipped inside "
+                      + $"at {safeOutsideAngle:F0}° — a forward arc");
         }
 
         // Noticed from behind, with nothing suggesting a blind side.
         if (widestPullAngle >= 135f)
+        {
+            var bounded = BoundRangeBySafeStands(profile, range, 180f, out var shrunk);
+
             return new DetectionModel(
-                DetectionType.Radius, range, 180f,
-                $"noticed from {widestPullAngle:F0}° off its facing — all directions");
+                DetectionType.Radius, bounded, 180f,
+                shrunk
+                    ? $"noticed from {widestPullAngle:F0}° off its facing, but walked past at "
+                      + $"{bounded:F1}y unnoticed — all directions, and closer than first thought"
+                    : $"noticed from {widestPullAngle:F0}° off its facing — all directions");
+        }
+
+        var unknownHalf     = MathF.Max(widestPullAngle, 45f);
+        var unknownBounded  = BoundRangeBySafeStands(profile, range, unknownHalf, out _);
 
         return new DetectionModel(
-            DetectionType.Unknown, range, MathF.Max(widestPullAngle, 45f),
-            $"noticed out to {range:F1}y, but only within {widestPullAngle:F0}° so far — "
+            DetectionType.Unknown, unknownBounded, unknownHalf,
+            $"noticed out to {unknownBounded:F1}y, but only within {widestPullAngle:F0}° so far — "
             + "walk in from the side and from behind to settle cone versus radius");
+    }
+
+    /// <summary>
+    /// Shrinks a range using safe stands taken INSIDE the detection arc.
+    ///
+    /// Pulls give the range a floor and nothing else, so without this a mob can
+    /// only ever be judged bigger. Running straight through the front of a cone
+    /// at 3y without being noticed proves the reach there is under 3y, however
+    /// far away it once managed to catch you — and the drawing has to follow
+    /// that or the user is walking through an area the plugin still paints as
+    /// dangerous.
+    ///
+    /// Only stands within the arc count. A safe stand BEHIND a cone says
+    /// nothing about how far it reaches forwards; that evidence is what defines
+    /// the arc in the first place.
+    /// </summary>
+    private static float BoundRangeBySafeStands(
+        AggroProfile profile,
+        float        range,
+        float        halfAngleDegrees,
+        out bool     shrunk)
+    {
+        // DISABLED — kept for the reasoning, not the behaviour.
+        //
+        // This shrank the range to the closest safe stand inside the arc, which
+        // was wrong in the one direction that matters. Where a slice holds both
+        // a pull and a closer safe stand, the two contradict: a cone has ONE
+        // range, so it cannot both reach 9.5y and fail to notice someone at
+        // 3.2y at the same angle. One reading is noise.
+        //
+        // Taking the minimum resolved that in favour of "safe", which made the
+        // shape under-draw and put the player in real aggro range outside the
+        // drawing. Worse, it was sticky: a new pull further out could not grow
+        // the range back, because the old safe stand still capped it.
+        //
+        // Over-drawing is an annoyance. Under-drawing walks you into a pull. So
+        // pulls win, and contradictions are surfaced in the Mob Viewer for the
+        // user to judge rather than silently resolved here.
+        //
+        // The correct treatment is almost certainly that a safe stand closer
+        // than the range means that ANGLE is outside the arc, not that the
+        // range is shorter — which narrows the cone instead of shortening it.
+        // That needs the contradictory data cleaned up first.
+        shrunk = false;
+        return range;
     }
 
     /// <summary>
