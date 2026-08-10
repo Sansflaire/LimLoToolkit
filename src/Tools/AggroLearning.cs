@@ -899,6 +899,59 @@ public sealed class AggroLearningStore
             + "walk in from the side and from behind to settle cone versus radius");
     }
 
+    /// <summary>
+    /// Reach to DRAW at a given angle off the mob's facing.
+    ///
+    /// Classification supplies the model, but safe stands cap it regardless —
+    /// including when there are no pulls at all and therefore no classification.
+    /// That last case is the important one: a mob you have walked all around
+    /// without ever being noticed has masses of evidence that its reach is
+    /// small, and drawing the fallback circle over the top of that evidence is
+    /// simply wrong. Proof of safety is proof, whether or not it has ever
+    /// managed to catch you.
+    /// </summary>
+    public static float ReachForDrawing(
+        AggroProfile?  profile,
+        DetectionModel model,
+        float          angleOffFacing,
+        float          fallback)
+    {
+        var reach = model.Type switch
+        {
+            DetectionType.Cone   => angleOffFacing <= model.HalfAngleDegrees ? model.Range : 0f,
+            DetectionType.Radius => model.Range,
+            _                    => fallback,
+        };
+
+        if (profile == null)
+            return reach;
+
+        EnsureBins(profile);
+
+        var bin  = BinFor(Math.Clamp(angleOffFacing, 0f, 180f));
+        var safe = profile.BinMinSafeDistance[bin];
+
+        if (safe > 0f)
+            reach = MathF.Min(reach, MathF.Max(0f, safe - 0.25f));
+
+        return reach;
+    }
+
+    /// <summary>True when a mob has any evidence worth drawing from.</summary>
+    public static bool HasEvidence(AggroProfile? profile)
+    {
+        if (profile == null)
+            return false;
+
+        EnsureBins(profile);
+
+        for (var i = 0; i < AngleBins; i++)
+            if (profile.BinSamples[i] > 0 || profile.BinMinSafeDistance[i] > 0f)
+                return true;
+
+        return false;
+    }
+
     /// <summary>Absolute angle in degrees between a mob's facing and the player.</summary>
     public static float AngleOffFacing(Vector3 mobPosition, float mobRotation, Vector3 playerPosition)
     {

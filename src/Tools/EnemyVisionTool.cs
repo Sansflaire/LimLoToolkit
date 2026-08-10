@@ -61,9 +61,11 @@ public sealed class EnemyVisionTool : ITool
         public float           Radius          { get; } = radius;
         /// <summary>Hitring-to-hitring gap, i.e. what the slider and samples mean.</summary>
         public float           Gap             { get; init; }
-        /// <summary>Measured envelope, when this mob has one. Overrides the shape.</summary>
-        public AggroProfile?   Envelope        { get; init; }
         public float           HitboxRadius    { get; init; }
+        /// <summary>Evidence for this mob, if any. Caps the drawn reach per angle.</summary>
+        public AggroProfile?   Profile         { get; init; }
+        /// <summary>Classification, when there is enough evidence for one.</summary>
+        public DetectionModel  Model           { get; init; }
         public float           ConeDegrees     { get; } = coneDegrees;
         public bool            Omnidirectional { get; } = omnidirectional;
         public bool            PlayerInside    { get; } = playerInside;
@@ -232,29 +234,22 @@ public sealed class EnemyVisionTool : ITool
 
                 var playerAngle = AggroLearningStore.AngleOffFacing(obj.Position, obj.Rotation, playerPos);
 
-                bool  inside;
-                float radius;
-                float drawCone;
+                // One path for everything. The classification supplies the model
+                // where there is one, evidence caps it per angle either way, and
+                // the fallback only fills the gaps that evidence leaves.
+                var fallbackAtAngle = !effectiveOmni && cone < 360f && playerAngle > cone * 0.5f
+                    ? 0f
+                    : gap;
 
-                if (classified)
-                {
-                    var measured = Math.Clamp(model.Range, 0f, MaxRadius);
+                var reachAtPlayer = AggroLearningStore.ReachForDrawing(
+                    profile, model, playerAngle, fallbackAtAngle);
 
-                    radius   = measured + obj.HitboxRadius;
-                    drawCone = model.Type == AggroLearningStore.RadiusType ? 360f : model.FullConeDegrees;
+                var inside = distance - playerHitbox - obj.HitboxRadius <= reachAtPlayer;
 
-                    inside = distance - playerHitbox - obj.HitboxRadius <= measured
-                             && playerAngle <= model.HalfAngleDegrees;
-                }
-                else
-                {
-                    radius   = gap + obj.HitboxRadius;
-                    drawCone = effectiveOmni ? 360f : cone;
-
-                    inside = distance - playerHitbox <= radius;
-                    if (inside && !effectiveOmni && cone < 360f)
-                        inside = playerAngle <= cone * 0.5f;
-                }
+                var radius   = Math.Clamp(reachAtPlayer, 0f, MaxRadius) + obj.HitboxRadius;
+                var drawCone = classified
+                    ? (model.Type == AggroLearningStore.RadiusType ? 360f : model.FullConeDegrees)
+                    : effectiveOmni ? 360f : cone;
 
                 if (inside)
                     threatening++;
@@ -270,7 +265,13 @@ public sealed class EnemyVisionTool : ITool
                     obj.BaseId,
                     distance,
                     confidence,
-                    classified) { Gap = gap, HitboxRadius = obj.HitboxRadius });
+                    classified)
+                {
+                    Gap          = gap,
+                    HitboxRadius = obj.HitboxRadius,
+                    Profile      = profile,
+                    Model        = model,
+                });
             }
 
             shapes.Sort((a, b) => a.Distance.CompareTo(b.Distance));
@@ -318,7 +319,12 @@ public sealed class EnemyVisionTool : ITool
                     ? DangerColor
                     : shape.Omnidirectional ? SoundColor : SightColor);
 
-            if (shape.Omnidirectional || shape.ConeDegrees >= 360f)
+            // Anything with evidence is drawn angle by angle, so proven-safe
+            // directions genuinely pull the outline in instead of being papered
+            // over by an assumed circle.
+            if (AggroLearningStore.HasEvidence(shape.Profile))
+                DrawEvidenceShape(drawList, shape, colour);
+            else if (shape.Omnidirectional || shape.ConeDegrees >= 360f)
                 DrawGroundCircle(drawList, shape.Position, shape.Radius, colour);
             else
                 DrawGroundCone(drawList, shape.Position, shape.Radius, shape.Facing, shape.ConeDegrees, colour);
@@ -331,21 +337,44 @@ public sealed class EnemyVisionTool : ITool
     /// forward lobe, an even ring, or a lobe sitting on top of a close core.
     /// No cone-or-circle assumption anywhere.
     /// </summary>
-    private static void DrawEnvelope(ImDrawListPtr drawList, Shape shape, AggroProfile envelope, uint colour)
+    /// <summary>
+    /// Draws the outline angle by angle from the evidence, so a direction you
+    /// have proven safe pulls the line in tight against the mob instead of
+    /// being covered by an assumed circle.
+    ///
+    /// A non-pull is evidence. Walking right up behind something and not being
+    /// noticed proves that area is safe just as firmly as a pull proves the
+    /// opposite, and the drawing has to show that or it is lying about what is
+    /// known.
+    /// </summary>
+    private static void DrawEvidenceShape(ImDrawListPtr drawList, Shape shape, uint colour)
     {
         Vector2? previous = null;
-        Vector2? first    = null;
 
         for (var i = 0; i <= CircleSegments; i++)
         {
             var sweep      = i / (float)CircleSegments * MathF.Tau;
             var worldAngle = shape.Facing + sweep;
 
-            // Fold to 0-180 off the facing; the envelope is left/right symmetric.
+            // Fold to 0-180 off the facing; detection is left/right symmetric.
             var offFacing = MathF.Abs(WrapPi(sweep)) * 180f / MathF.PI;
 
-            var reach = AggroLearningStore.RadiusAtAngle(envelope, offFacing) ?? shape.Gap;
-            var r     = Math.Clamp(reach, 0f, MaxRadius) + shape.HitboxRadius;
+            var fallback = !shape.Omnidirectional && shape.ConeDegrees < 360f
+                           && offFacing > shape.ConeDegrees * 0.5f
+                ? 0f
+                : shape.Gap;
+
+            var reach = AggroLearningStore.ReachForDrawing(
+                shape.Profile, shape.Model, offFacing, fallback);
+
+            // A slice proven safe right up to the hitbox has nothing to draw.
+            if (reach <= 0.05f)
+            {
+                previous = null;
+                continue;
+            }
+
+            var r = Math.Clamp(reach, 0f, MaxRadius) + shape.HitboxRadius;
 
             var point = new Vector3(
                 shape.Position.X + r * MathF.Sin(worldAngle),
@@ -357,8 +386,6 @@ public sealed class EnemyVisionTool : ITool
                 previous = null;
                 continue;
             }
-
-            first ??= screen;
 
             if (previous is { } prev)
                 drawList.AddLine(prev, screen, colour, ShapeThickness);

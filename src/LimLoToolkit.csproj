@@ -13,7 +13,7 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <AssemblyName>LimLoToolkit</AssemblyName>
     <RootNamespace>LimLoToolkit</RootNamespace>
-    <Version>0.9.1.0</Version>
+    <Version>0.9.2.0</Version>
   </PropertyGroup>
 
   <PropertyGroup>
