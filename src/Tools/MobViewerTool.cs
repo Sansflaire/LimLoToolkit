@@ -60,6 +60,19 @@ public sealed class MobViewerTool : ITool
 
     private static readonly Vector4 SightingColor = new(0.35f, 0.85f, 1.00f, 0.90f);
 
+    /// <summary>Wedges marking approaches still needed on the selected mob.</summary>
+    private static readonly Vector4 MissingAngleColor = new(1.00f, 0.35f, 0.80f, 0.95f);
+
+    /// <summary>
+    /// Show the missing approach angles in the world for the SELECTED mob only.
+    /// Deliberately scoped to one mob: drawing this for everything nearby would
+    /// be exactly the screen clutter that got the sighting rings removed.
+    /// </summary>
+    private bool _showMissingAngles = true;
+
+    /// <summary>Live instances of the selected mob, for the wedge overlay.</summary>
+    private List<(Vector3 Position, float Rotation)> _selectedInstances = new();
+
     /// <summary>Base ids currently in the object table, refreshed each tick.</summary>
     private HashSet<uint> _nearby = new();
 
@@ -80,7 +93,8 @@ public sealed class MobViewerTool : ITool
     {
         try
         {
-            var nearby = new HashSet<uint>();
+            var nearby    = new HashSet<uint>();
+            var instances = new List<(Vector3, float)>();
 
             _bnpcSheet ??= Plugin.DataManager.GetExcelSheet<BNpcBase>();
             _playerForayLevel = ForayLevel.TryGet(Plugin.ObjectTable.LocalPlayer);
@@ -100,6 +114,9 @@ public sealed class MobViewerTool : ITool
 
                 if (obj is not IBattleNpc battleNpc || battleNpc.BattleNpcKind != BattleNpcSubKind.Combatant)
                     continue;
+
+                if (obj.BaseId == _selectedBaseId && Vector3.Distance(_playerPos, obj.Position) <= 60f)
+                    instances.Add((obj.Position, obj.Rotation));
 
                 var name = obj.Name.ToString();
 
@@ -146,12 +163,113 @@ public sealed class MobViewerTool : ITool
                 };
             }
 
-            _nearby = nearby;
+            _nearby            = nearby;
+            _selectedInstances = instances;
         }
         catch (Exception ex)
         {
             Plugin.Log.Error(ex, "MobViewerTool failed to refresh the nearby set.");
         }
+    }
+
+    /// <summary>
+    /// Draws the approach angles still missing for the selected mob, as pink
+    /// wedges around each live instance of it. Walk into one and it fills in.
+    ///
+    /// Turns "needs 5 more angles" from a number to interpret into a target to
+    /// walk at. Only the selected mob is drawn — doing this for everything
+    /// nearby would be the same screen clutter that got the sighting rings
+    /// deleted.
+    ///
+    /// Slices are folded left/right (detection is symmetric), so each missing
+    /// slice is drawn on both sides of the mob's facing. Standing in either
+    /// satisfies it.
+    /// </summary>
+    public void DrawOverlay()
+    {
+        if (!_showMissingAngles || _selectedBaseId == 0)
+            return;
+
+        var instances = _selectedInstances;
+        if (instances.Count == 0)
+            return;
+
+        var profile = _store.Find(_selectedBaseId);
+        if (profile == null || _store.IsIgnored(_selectedBaseId))
+            return;
+
+        var missing = AggroLearningStore.MissingBins(profile);
+        if (missing.Count == 0)
+            return;
+
+        var drawList = ImGui.GetForegroundDrawList();
+        var colour   = ImGui.ColorConvertFloat4ToU32(MissingAngleColor);
+
+        // Far enough out to stand in comfortably, without implying a measured
+        // distance — this marks a direction, not a range.
+        const float wedgeRadius = 10f;
+
+        foreach (var (position, rotation) in instances)
+        {
+            foreach (var bin in missing)
+            {
+                var (start, end) = AggroLearningStore.BinRange(bin);
+
+                DrawWedge(drawList, position, rotation, start, end, wedgeRadius, colour);
+                DrawWedge(drawList, position, rotation, -end, -start, wedgeRadius, colour);
+            }
+        }
+    }
+
+    /// <summary>Outlines one angular wedge on the ground, relative to a facing.</summary>
+    private static void DrawWedge(
+        ImDrawListPtr drawList,
+        Vector3       centre,
+        float         facing,
+        float         startDegrees,
+        float         endDegrees,
+        float         radius,
+        uint          colour)
+    {
+        const int segments = 6;
+
+        var startRad = facing + startDegrees * MathF.PI / 180f;
+        var endRad   = facing + endDegrees   * MathF.PI / 180f;
+
+        Vector2? previous = null;
+        Vector2? arcStart = null;
+        Vector2? arcEnd   = null;
+
+        var centreOnScreen = Plugin.GameGui.WorldToScreen(centre, out var centreScreen);
+
+        for (var i = 0; i <= segments; i++)
+        {
+            var angle = startRad + (endRad - startRad) * (i / (float)segments);
+            var point = new Vector3(
+                centre.X + radius * MathF.Sin(angle),
+                centre.Y,
+                centre.Z + radius * MathF.Cos(angle));
+
+            if (!Plugin.GameGui.WorldToScreen(point, out var screen))
+            {
+                previous = null;
+                continue;
+            }
+
+            arcStart ??= screen;
+            arcEnd     = screen;
+
+            if (previous is { } prev)
+                drawList.AddLine(prev, screen, colour, 2.5f);
+
+            previous = screen;
+        }
+
+        if (!centreOnScreen)
+            return;
+
+        if (arcStart is { } s) drawList.AddLine(centreScreen, s, colour, 2.5f);
+        if (arcEnd   is { } e) drawList.AddLine(centreScreen, e, colour, 2.5f);
     }
 
     /// <summary>Measured profiles, plus placeholders for anything only ever seen.</summary>
@@ -315,6 +433,36 @@ public sealed class MobViewerTool : ITool
     /// reads the same for a mob confined to one camp and one spread across the
     /// zone — the axis labels carry the true extent.
     /// </summary>
+    /// <summary>
+    /// Lists the approaches still needed and offers to show them in the world.
+    /// </summary>
+    private void DrawMissingAngleGuide(AggroProfile profile)
+    {
+        var missing = AggroLearningStore.MissingBins(profile);
+        if (missing.Count == 0)
+            return;
+
+        ImGui.Spacing();
+
+        var show = _showMissingAngles;
+        if (ImGui.Checkbox($"Show the {missing.Count} missing approach angle(s) in pink", ref show))
+            _showMissingAngles = show;
+        UiHelpers.HelpMarker(
+            "Draws a pink wedge on this mob for every angle with no data yet. Walk into one and it " +
+            "fills in — either it notices you, or it does not, and both answer the question. Drawn " +
+            "for the selected mob only.");
+
+        var labels = missing
+            .Select(bin => AggroLearningStore.BinLabel(bin))
+            .ToList();
+
+        UiHelpers.ColoredWrapped(MissingAngleColor,
+            "Still needed: " + string.Join(", ", labels) + " off its facing.");
+
+        if (_selectedInstances.Count == 0)
+            UiHelpers.Muted("None of these are nearby right now, so nothing is drawn.");
+    }
+
     private void DrawSightingMap(AggroProfile profile)
     {
         UiHelpers.SectionHeader("Where It Lives");
@@ -399,6 +547,8 @@ public sealed class MobViewerTool : ITool
             UiHelpers.ColoredWrapped(
                 UiHelpers.ConfidenceColor(confidence),
                 EnemyVisionTool.DescribeProgress(_store, profile));
+
+        DrawMissingAngleGuide(profile);
 
         ImGui.Spacing();
 

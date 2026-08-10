@@ -767,17 +767,91 @@ public sealed class AggroLearningStore
         profile.Distances.Count >= MinSamplesForConfident
         && profile.SamplesSinceMaxGrew >= StableSamplesForConfident;
 
+    /// <summary>How tightly the arc edge must be pinned to count as known.</summary>
+    public const float ArcBracketDegrees = 30f;
+
     /// <summary>
-    /// Is the SHAPE settled? This no longer trusts the sheet's sight/sound flag
-    /// as a shortcut — a mob the sheet calls forward-only can still have an
-    /// all-directions core, and a mob it calls omnidirectional can still reach
-    /// further forwards. The only way to know is to have walked in from enough
-    /// different angles, so the test is envelope coverage.
+    /// Is the SHAPE settled? The test is whether the arc EDGE is pinned down,
+    /// not how many slices happen to hold pulls.
+    ///
+    /// The previous rule demanded pulls from at least six of twelve slices, and
+    /// was unreachable for the commonest case in the game. A 90° cone spans
+    /// three slices; it will never aggro anyone from behind, so it can never
+    /// produce pulls in six. Mobs with plenty of good data sat permanently
+    /// amber because they were being asked for something impossible.
+    ///
+    /// A shape is known when either:
+    ///  - it has pulled from far off its facing, so it is all-directions and
+    ///    there is no edge to find, or
+    ///  - the widest angle it HAS pulled from and the narrowest angle it has
+    ///    failed to notice from sit close together, bracketing the edge.
     /// </summary>
-    public static bool ShapeSolved(AggroProfile profile) =>
-        FilledBins(profile) >= MinFilledBins
-        && profile.Angles.Count >= MinAngleSamplesForConfident
-        && profile.SamplesSinceAngleGrew >= StableAngleSamplesForConfident;
+    public static bool ShapeSolved(AggroProfile profile)
+    {
+        EnsureBins(profile);
+
+        var widestPull = WidestPullAngle(profile);
+        if (widestPull <= 0f)
+            return false;
+
+        // All-directions: no edge to pin.
+        if (widestPull >= 135f)
+            return true;
+
+        var safeOutside = NarrowestSafeOutsideAngle(profile);
+        return safeOutside is { } outside && outside - widestPull <= ArcBracketDegrees;
+    }
+
+    /// <summary>Widest slice centre that has produced a pull, or 0.</summary>
+    public static float WidestPullAngle(AggroProfile profile)
+    {
+        EnsureBins(profile);
+
+        var widest = 0f;
+        for (var i = 0; i < AngleBins; i++)
+            if (profile.BinSamples[i] > 0)
+                widest = MathF.Max(widest, (i + 0.5f) * BinWidthDegrees);
+
+        return widest;
+    }
+
+    /// <summary>
+    /// Narrowest angle where we went unnoticed closer than the proven range,
+    /// ignoring slices that have pulled. That angle lies outside the arc.
+    /// </summary>
+    public static float? NarrowestSafeOutsideAngle(AggroProfile profile)
+    {
+        EnsureBins(profile);
+
+        var range      = 0f;
+        for (var i = 0; i < AngleBins; i++)
+            if (profile.BinSamples[i] > 0)
+                range = MathF.Max(range, profile.BinMaxDistance[i]);
+
+        if (range <= 0f)
+            return null;
+
+        var widestPull = WidestPullAngle(profile);
+        float? narrowest = null;
+
+        for (var i = 0; i < AngleBins; i++)
+        {
+            if (profile.BinSamples[i] > 0)
+                continue;
+
+            var safe = profile.BinMinSafeDistance[i];
+            if (safe <= 0f || safe >= range - SafeTightenEpsilon)
+                continue;
+
+            var centre = (i + 0.5f) * BinWidthDegrees;
+            if (centre <= widestPull)
+                continue;
+
+            narrowest = narrowest is { } current ? MathF.Min(current, centre) : centre;
+        }
+
+        return narrowest;
+    }
 
     /// <summary>Green only when both halves are settled.</summary>
     public AggroConfidence ConfidenceOf(AggroProfile? profile)
@@ -814,16 +888,15 @@ public sealed class AggroLearningStore
 
         if (!ShapeSolved(profile))
         {
-            var filled = FilledBins(profile);
+            var widest = WidestPullAngle(profile);
 
-            if (filled < MinFilledBins)
-                parts.Add($"needs approaches from {MinFilledBins - filled} more angle(s)");
-            else if (profile.Angles.Count < MinAngleSamplesForConfident)
-                parts.Add($"needs {MinAngleSamplesForConfident - profile.Angles.Count} more angled pull(s)");
+            if (widest <= 0f)
+                parts.Add("no angled pulls yet — walk in from any direction");
+            else if (NarrowestSafeOutsideAngle(profile) is { } outside)
+                parts.Add($"edge is somewhere between {widest:F0}° and {outside:F0}° — "
+                          + "approach in that band to pin it");
             else
-                parts.Add($"arc still widening — needs "
-                          + $"{StableAngleSamplesForConfident - profile.SamplesSinceAngleGrew} more "
-                          + $"without a wider angle (currently {profile.MaxAngle:F0}°)");
+                parts.Add($"pulled out to {widest:F0}° so far — try wider angles to find its edge");
         }
 
         return parts.Count == 0 ? "solved" : string.Join("; ", parts);
@@ -1215,6 +1288,53 @@ public sealed class AggroLearningStore
 
         return true;
     }
+
+    /// <summary>
+    /// Angular slices with no evidence of either kind. These are precisely the
+    /// approaches still needed to finish a mob, so they can be drawn as targets
+    /// to walk into rather than left as a number to interpret.
+    /// </summary>
+    public static List<int> MissingBins(AggroProfile profile)
+    {
+        EnsureBins(profile);
+
+        var missing = new List<int>();
+
+        if (ShapeSolved(profile))
+            return missing;
+
+        var widestPull = WidestPullAngle(profile);
+
+        // No pulls at all yet: every slice is worth trying, closest first.
+        if (widestPull <= 0f)
+        {
+            for (var i = 0; i < AngleBins; i++)
+                missing.Add(i);
+
+            return missing;
+        }
+
+        // The edge lies somewhere past the widest pull. The useful slices are
+        // the uncertainty band: from just beyond that pull, out to the first
+        // angle already known to be outside. Walking any of them either extends
+        // the arc or closes the bracket, and both finish the mob.
+        var outerLimit = NarrowestSafeOutsideAngle(profile) ?? 180f;
+
+        for (var i = 0; i < AngleBins; i++)
+        {
+            var centre = (i + 0.5f) * BinWidthDegrees;
+            if (centre <= widestPull || centre > outerLimit)
+                continue;
+
+            missing.Add(i);
+        }
+
+        return missing;
+    }
+
+    /// <summary>Angular span of a slice, in degrees off the mob's facing.</summary>
+    public static (float Start, float End) BinRange(int bin) =>
+        (bin * BinWidthDegrees, (bin + 1) * BinWidthDegrees);
 
     /// <summary>True when a mob has any evidence worth drawing from.</summary>
     public static bool HasEvidence(AggroProfile? profile)
