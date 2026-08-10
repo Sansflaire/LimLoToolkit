@@ -43,7 +43,13 @@ public sealed class MobViewerTool : ITool
     private uint   _selectedBaseId;
     private string _search = string.Empty;
     private bool   _onlyNearby;
-    private bool   _hideIgnored = true;
+    /// <summary>
+    /// Off by default: irrelevant mobs are more useful greyed out at the bottom
+    /// of the list than missing entirely.
+    /// </summary>
+    private bool _hideIgnored;
+
+    private int? _playerForayLevel;
 
     /// <summary>Base ids currently in the object table, refreshed each tick.</summary>
     private HashSet<uint> _nearby = new();
@@ -68,6 +74,7 @@ public sealed class MobViewerTool : ITool
             var nearby = new HashSet<uint>();
 
             _bnpcSheet ??= Plugin.DataManager.GetExcelSheet<BNpcBase>();
+            _playerForayLevel = ForayLevel.TryGet(Plugin.ObjectTable.LocalPlayer);
 
             foreach (var obj in Plugin.ObjectTable)
             {
@@ -90,9 +97,22 @@ public sealed class MobViewerTool : ITool
 
                 nearby.Add(obj.BaseId);
 
-                // Record a placeholder for anything we have never measured, so
-                // it shows up red rather than silently missing.
-                if (_store.Find(obj.BaseId) != null || _seenOnly.ContainsKey(obj.BaseId))
+                var foray = ForayLevel.TryGet(obj) ?? 0;
+
+                // Remember the level on the profile so relevance can still be
+                // judged when the mob is nowhere near.
+                if (_store.Find(obj.BaseId) is { } known)
+                {
+                    if (foray > 0 && known.ForayLevel != foray)
+                    {
+                        known.ForayLevel = foray;
+                        _store.MarkDirty();
+                    }
+
+                    continue;
+                }
+
+                if (_seenOnly.ContainsKey(obj.BaseId))
                     continue;
 
                 _seenOnly[obj.BaseId] = new AggroProfile
@@ -104,6 +124,7 @@ public sealed class MobViewerTool : ITool
                     Level                = battleNpc.Level,
                     MaxHp                = battleNpc.MaxHp,
                     HitboxRadius         = obj.HitboxRadius,
+                    ForayLevel           = foray,
                 };
             }
 
@@ -126,8 +147,11 @@ public sealed class MobViewerTool : ITool
                 all.Add(placeholder);
         }
 
+        // Irrelevant mobs sink to the bottom regardless of how much data they
+        // have; among the rest, the best-known come first.
         return all
-            .OrderBy(p => _store.ConfidenceOf(p) switch
+            .OrderBy(p => IsIrrelevant(p) ? 1 : 0)
+            .ThenBy(p => _store.ConfidenceOf(p) switch
             {
                 AggroConfidence.Confident => 0,
                 AggroConfidence.Learning  => 1,
@@ -136,6 +160,18 @@ public sealed class MobViewerTool : ITool
             .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
+
+    /// <summary>
+    /// Not worth attention: either explicitly ignored, or so far below the
+    /// player's Knowledge level that it can never aggro.
+    /// </summary>
+    private bool IsIrrelevant(AggroProfile profile) =>
+        _store.IsIgnored(profile.BaseId) || IsOutleveled(profile);
+
+    private bool IsOutleveled(AggroProfile profile) =>
+        _config.IgnoreOutleveledEnemies
+        && profile.ForayLevel > 0
+        && ForayLevel.IsHarmless(_playerForayLevel, profile.ForayLevel, _config.OutlevelMargin);
 
     public void Draw()
     {
@@ -178,17 +214,26 @@ public sealed class MobViewerTool : ITool
                 _onlyNearby = onlyNearby;
 
             var hideIgnored = _hideIgnored;
-            if (ImGui.Checkbox("Hide ignored", ref hideIgnored))
+            if (ImGui.Checkbox("Hide irrelevant", ref hideIgnored))
                 _hideIgnored = hideIgnored;
 
             ImGui.Separator();
 
-            var solved   = 0;
-            var learning = 0;
-            var empty    = 0;
+            var solved          = 0;
+            var learning        = 0;
+            var empty           = 0;
+            var irrelevantCount = 0;
 
             foreach (var profile in profiles)
             {
+                // Counts describe the mobs that actually matter; irrelevant ones
+                // are tallied separately rather than inflating "empty".
+                if (IsIrrelevant(profile))
+                {
+                    irrelevantCount++;
+                    continue;
+                }
+
                 switch (_store.ConfidenceOf(profile))
                 {
                     case AggroConfidence.Confident: solved++;   break;
@@ -203,16 +248,16 @@ public sealed class MobViewerTool : ITool
             ImGui.SameLine();
             UiHelpers.Colored(UiHelpers.Bad, $"{empty} empty");
 
-            if (_store.IgnoredCount > 0)
-                UiHelpers.Muted($"{_store.IgnoredCount} ignored");
+            if (irrelevantCount > 0)
+                UiHelpers.Muted($"{irrelevantCount} irrelevant (ignored or outlevelled)");
 
             ImGui.Separator();
 
             foreach (var profile in profiles)
             {
-                var ignored = _store.IsIgnored(profile.BaseId);
+                var irrelevant = IsIrrelevant(profile);
 
-                if (_hideIgnored && ignored)
+                if (_hideIgnored && irrelevant)
                     continue;
 
                 if (_onlyNearby && !_nearby.Contains(profile.BaseId))
@@ -224,10 +269,10 @@ public sealed class MobViewerTool : ITool
 
                 var confidence = _store.ConfidenceOf(profile);
 
-                // Ignored mobs stay visible but recede — they are not part of
-                // the green/amber/red story any more.
+                // Irrelevant mobs stay visible but recede to grey — they are not
+                // part of the green/amber/red story any more.
                 ImGui.PushStyleColor(ImGuiCol.Text,
-                    ignored ? UiHelpers.Dim : UiHelpers.ConfidenceColor(confidence));
+                    irrelevant ? UiHelpers.Dim : UiHelpers.ConfidenceColor(confidence));
                 var label = string.IsNullOrEmpty(profile.Name) ? $"#{profile.BaseId}" : profile.Name;
                 if (ImGui.Selectable($"{label}###limlo-mob-{profile.BaseId}", profile.BaseId == _selectedBaseId))
                     _selectedBaseId = profile.BaseId;
@@ -257,7 +302,11 @@ public sealed class MobViewerTool : ITool
 
         var ignored = _store.IsIgnored(profile.BaseId);
 
-        if (ignored)
+        if (IsOutleveled(profile))
+            UiHelpers.Colored(UiHelpers.Dim,
+                $"Harmless — its Knowledge is {profile.ForayLevel} and yours is {_playerForayLevel}, "
+                + "so it can never aggro you. Not drawn, not trained on.");
+        else if (ignored)
             UiHelpers.Colored(UiHelpers.Dim, "Ignored — not drawn, not trained on.");
         else
             UiHelpers.Colored(
@@ -413,6 +462,7 @@ public sealed class MobViewerTool : ITool
             UiHelpers.Row("Level", profile.Level > 0 ? profile.Level.ToString() : "(unknown)");
             UiHelpers.Row("Max HP", profile.MaxHp > 0 ? profile.MaxHp.ToString("N0") : "(unknown)");
             UiHelpers.Row("Hitbox radius", $"{profile.HitboxRadius:F2}y");
+            UiHelpers.Row("Knowledge level", profile.ForayLevel > 0 ? profile.ForayLevel.ToString() : "(unknown)");
             UiHelpers.Row("Seen in", profile.TerritoryId switch
             {
                 1252 => "South Horn",

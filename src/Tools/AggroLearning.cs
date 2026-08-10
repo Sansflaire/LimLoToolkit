@@ -84,6 +84,9 @@ public sealed class AggroProfile
     public uint   MaxHp                { get; set; }
     public float  HitboxRadius         { get; set; }
 
+    /// <summary>Knowledge level, so relevance survives without the mob nearby.</summary>
+    public int    ForayLevel           { get; set; }
+
     /// <summary>Hitring-to-hitring gap at each recorded pull, in yalms.</summary>
     public List<float> Distances { get; set; } = new();
 
