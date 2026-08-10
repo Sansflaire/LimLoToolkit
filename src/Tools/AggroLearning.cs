@@ -285,7 +285,38 @@ public sealed class AggroLearningStore
 
         profile.BinMinSafeDistance[bin] = distance;
         profile.BinSafeSamples[bin]++;
+
+        // NOTE: an earlier version deleted pull evidence in this slice whenever
+        // a closer safe stand contradicted it. Simulating that over the real
+        // data first showed it wiping every pull on 8 of 13 mobs, because the
+        // contradictions are pervasive rather than occasional. Pervasive
+        // contradiction means one SOURCE is systematically wrong, and the
+        // answer is to fix that source — not to let the two sides annihilate
+        // each other. See the player-initiated-pull guard in AggroTrainer.
         return true;
+    }
+
+    /// <summary>
+    /// Rebuilds the summary values after pull evidence is discarded, so a
+    /// deleted pull cannot keep influencing the classification through a stale
+    /// maximum.
+    /// </summary>
+    private static void RecomputeAfterPullRemoval(AggroProfile profile)
+    {
+        var maxDistance = 0f;
+        var maxAngle    = 0f;
+
+        for (var i = 0; i < AngleBins; i++)
+        {
+            if (profile.BinSamples[i] == 0)
+                continue;
+
+            maxDistance = MathF.Max(maxDistance, profile.BinMaxDistance[i]);
+            maxAngle    = MathF.Max(maxAngle, (i + 0.5f) * BinWidthDegrees);
+        }
+
+        profile.MaxDistance = maxDistance;
+        profile.MaxAngle    = maxAngle;
     }
 
     /// <summary>
@@ -875,7 +906,13 @@ public sealed class AggroLearningStore
         if (range <= 0f)
             return new DetectionModel(DetectionType.Unknown, 0f, 180f, "no pulls recorded yet");
 
-        var widestPullAngle = profile.MaxAngle;
+        // Derived from the slices that still hold pulls, never from a stored
+        // maximum — a pull discarded as contradicted must stop counting
+        // immediately, and a stale summary value would keep it alive.
+        var widestPullAngle = 0f;
+        for (var i = 0; i < AngleBins; i++)
+            if (profile.BinSamples[i] > 0)
+                widestPullAngle = MathF.Max(widestPullAngle, (i + 0.5f) * BinWidthDegrees);
 
         // The narrowest angle at which we got closer than the proven range and
         // still went unnoticed. That angle must sit outside a forward arc.

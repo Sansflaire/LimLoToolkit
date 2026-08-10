@@ -202,7 +202,7 @@ public sealed class EnemyVisionTool : ITool
                     battleNpc.Level,
                     battleNpc.MaxHp,
                     obj.HitboxRadius,
-                    distance) { Ignored = ignored });
+                    distance) { Ignored = ignored, CurrentHp = battleNpc.CurrentHp });
 
                 // Ignored mobs are tracked for logging only — no shape.
                 if (ignored)

@@ -141,11 +141,14 @@ public sealed class AggroTrainer
     /// pull is visible without the toolkit window being open on this panel.
     /// </summary>
     /// <summary>Panel-only note. Never reaches chat.</summary>
-    private void LogQuiet(string message)
+    private void LogQuiet(string message, bool accepted = true)
     {
-        SafeObservationsThisSession++;
+        if (accepted)
+            SafeObservationsThisSession++;
+        else
+            RejectedThisSession++;
 
-        _events.Insert(0, new TrainingEvent(message, true));
+        _events.Insert(0, new TrainingEvent(message, accepted));
         while (_events.Count > MaxLoggedEvents)
             _events.RemoveAt(_events.Count - 1);
 
@@ -250,7 +253,10 @@ public sealed class AggroTrainer
                 }
                 else if (!watchedLongEnough)
                 {
-                    Log($"{tracked.Name} — it was already chasing you when it came into view, not a clean pull.", false);
+                    // Panel only. A mob arriving already aggroed is routine and
+                    // repeats constantly; announcing each one buries the chat
+                    // messages that actually matter.
+                    LogQuiet($"{tracked.Name} — already chasing you when it came into view, not a clean pull.", false);
                 }
                 else
                 {
@@ -333,6 +339,19 @@ public sealed class AggroTrainer
         if (enemyWasInCombat)
         {
             Log($"{tracked.Name} — it was already in combat, not a fresh detection.", false);
+            return;
+        }
+
+        // THE BIG ONE. Attacking a mob makes it target you, which looks exactly
+        // like a detection — recorded at whatever range you opened from. That
+        // is where implausible 11-12y "aggro ranges" came from, and it is why
+        // pulls contradicted safe stands on nearly every mob: the plugin was
+        // measuring the player's attack range, not the mob's eyesight.
+        //
+        // Damage is the tell. A mob at full health has not been engaged.
+        if (tracked.CurrentHp < tracked.MaxHp)
+        {
+            Log($"{tracked.Name} — already damaged, so you engaged it. That measures your reach, not its.", false);
             return;
         }
 
@@ -524,6 +543,8 @@ public readonly struct TrackedEnemy(
     public bool        InCombat             { get; } = inCombat;
     public byte        Level                { get; } = level;
     public uint        MaxHp                { get; } = maxHp;
+    /// <summary>Below max means the player engaged it — not a proximity detection.</summary>
+    public uint        CurrentHp            { get; init; }
     public float       HitboxRadius         { get; } = hitboxRadius;
     public float       Distance             { get; } = distance;
 }
