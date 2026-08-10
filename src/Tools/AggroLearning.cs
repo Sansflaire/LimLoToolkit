@@ -8,6 +8,16 @@ using Newtonsoft.Json;
 
 namespace LimLoToolkit.Tools;
 
+/// <summary>One place a mob type was observed.</summary>
+[Serializable]
+public sealed class Sighting
+{
+    public ushort Territory { get; set; }
+    public float  X         { get; set; }
+    public float  Y         { get; set; }
+    public float  Z         { get; set; }
+}
+
 /// <summary>On-disk shape of the training data file.</summary>
 [Serializable]
 public sealed class AggroDataFile
@@ -86,6 +96,13 @@ public sealed class AggroProfile
 
     /// <summary>Knowledge level, so relevance survives without the mob nearby.</summary>
     public int    ForayLevel           { get; set; }
+
+    /// <summary>
+    /// Where this mob type has been seen, thinned to one point per grid cell so
+    /// the list stays small however long you play. Enough to show the ground it
+    /// occupies rather than every individual spawn.
+    /// </summary>
+    public List<Sighting> Sightings { get; set; } = new();
 
     /// <summary>Hitring-to-hitring gap at each recorded pull, in yalms.</summary>
     public List<float> Distances { get; set; } = new();
@@ -981,6 +998,62 @@ public sealed class AggroLearningStore
         }
 
         return null;
+    }
+
+    /// <summary>Grid size for thinning sightings, in yalms.</summary>
+    private const float SightingGridSize = 6f;
+
+    /// <summary>Upper bound on stored sightings per mob type.</summary>
+    private const int MaxSightingsPerMob = 400;
+
+    /// <summary>
+    /// Records where a mob was seen, thinned to one point per grid cell.
+    /// Returns true when a genuinely new spot was added, so callers know
+    /// whether anything needs saving.
+    /// </summary>
+    public bool AddSighting(uint baseId, string name, ushort territory, Vector3 position)
+    {
+        // Create on first sight. A mob you have merely walked past still has a
+        // location worth knowing, and it shows up as a red no-data entry, which
+        // is exactly the state worth seeing.
+        if (!_byBaseId.TryGetValue(baseId, out var profile))
+        {
+            profile = new AggroProfile
+            {
+                BaseId      = baseId,
+                Name        = name,
+                TerritoryId = territory,
+            };
+
+            _byBaseId[baseId] = profile;
+        }
+        else if (string.IsNullOrEmpty(profile.Name) && !string.IsNullOrEmpty(name))
+        {
+            profile.Name = name;
+        }
+
+        foreach (var existing in profile.Sightings)
+        {
+            if (existing.Territory != territory)
+                continue;
+
+            if (MathF.Abs(existing.X - position.X) < SightingGridSize
+                && MathF.Abs(existing.Z - position.Z) < SightingGridSize)
+                return false;
+        }
+
+        if (profile.Sightings.Count >= MaxSightingsPerMob)
+            return false;
+
+        profile.Sightings.Add(new Sighting
+        {
+            Territory = territory,
+            X         = position.X,
+            Y         = position.Y,
+            Z         = position.Z,
+        });
+
+        return true;
     }
 
     /// <summary>True when a mob has any evidence worth drawing from.</summary>

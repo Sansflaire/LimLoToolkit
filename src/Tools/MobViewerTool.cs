@@ -49,7 +49,14 @@ public sealed class MobViewerTool : ITool
     /// </summary>
     private bool _hideIgnored;
 
-    private int? _playerForayLevel;
+    private int?    _playerForayLevel;
+    private ushort  _territory;
+    private Vector3 _playerPos;
+
+    /// <summary>Draw the selected mob's known ground out in the world.</summary>
+    private bool _highlightSelectedInWorld = true;
+
+    private static readonly Vector4 SightingColor = new(0.35f, 0.85f, 1.00f, 0.90f);
 
     /// <summary>Base ids currently in the object table, refreshed each tick.</summary>
     private HashSet<uint> _nearby = new();
@@ -76,6 +83,10 @@ public sealed class MobViewerTool : ITool
             _bnpcSheet ??= Plugin.DataManager.GetExcelSheet<BNpcBase>();
             _playerForayLevel = ForayLevel.TryGet(Plugin.ObjectTable.LocalPlayer);
 
+            var territory = (ushort)Plugin.ClientState.TerritoryType;
+            _territory    = territory;
+            _playerPos    = Plugin.ObjectTable.LocalPlayer?.Position ?? Vector3.Zero;
+
             foreach (var obj in Plugin.ObjectTable)
             {
                 if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc)
@@ -96,6 +107,10 @@ public sealed class MobViewerTool : ITool
                     continue;
 
                 nearby.Add(obj.BaseId);
+
+                // Remember the ground this mob type occupies.
+                if (_store.AddSighting(obj.BaseId, name, territory, obj.Position))
+                    _store.MarkDirty();
 
                 var foray = ForayLevel.TryGet(obj) ?? 0;
 
@@ -172,6 +187,64 @@ public sealed class MobViewerTool : ITool
         _config.IgnoreOutleveledEnemies
         && profile.ForayLevel > 0
         && ForayLevel.IsHarmless(_playerForayLevel, profile.ForayLevel, _config.OutlevelMargin);
+
+    /// <summary>
+    /// Rings each recorded spot for the selected mob out in the world, so the
+    /// area it occupies is visible while walking rather than only on a panel.
+    /// Runs regardless of window state, like every other overlay.
+    /// </summary>
+    public void DrawOverlay()
+    {
+        if (!_highlightSelectedInWorld || _selectedBaseId == 0)
+            return;
+
+        var profile = _store.Find(_selectedBaseId);
+        if (profile == null || profile.Sightings.Count == 0)
+            return;
+
+        var drawList = ImGui.GetForegroundDrawList();
+        var colour   = ImGui.ColorConvertFloat4ToU32(SightingColor);
+
+        foreach (var sighting in profile.Sightings)
+        {
+            if (sighting.Territory != _territory)
+                continue;
+
+            var centre = new Vector3(sighting.X, sighting.Y, sighting.Z);
+
+            // Far-away spots would project to noise on screen.
+            if (Vector3.Distance(_playerPos, centre) > 120f)
+                continue;
+
+            DrawGroundRing(drawList, centre, 4f, colour);
+        }
+    }
+
+    private static void DrawGroundRing(ImDrawListPtr drawList, Vector3 centre, float radius, uint colour)
+    {
+        const int segments = 24;
+        Vector2? previous = null;
+
+        for (var i = 0; i <= segments; i++)
+        {
+            var angle = i / (float)segments * MathF.Tau;
+            var point = new Vector3(
+                centre.X + radius * MathF.Sin(angle),
+                centre.Y,
+                centre.Z + radius * MathF.Cos(angle));
+
+            if (!Plugin.GameGui.WorldToScreen(point, out var screen))
+            {
+                previous = null;
+                continue;
+            }
+
+            if (previous is { } prev)
+                drawList.AddLine(prev, screen, colour, 2f);
+
+            previous = screen;
+        }
+    }
 
     public void Draw()
     {
@@ -291,6 +364,78 @@ public sealed class MobViewerTool : ITool
         ImGui.EndChild();
     }
 
+    /// <summary>
+    /// Top-down plot of everywhere this mob has been seen, with the player
+    /// marked. Scaled to fit whatever ground the mob actually covers, so it
+    /// reads the same for a mob confined to one camp and one spread across the
+    /// zone — the axis labels carry the true extent.
+    /// </summary>
+    private void DrawSightingMap(AggroProfile profile)
+    {
+        UiHelpers.SectionHeader("Where It Lives");
+
+        var points = profile.Sightings.Where(s => s.Territory == _territory).ToList();
+
+        if (points.Count == 0)
+        {
+            UiHelpers.Muted(profile.Sightings.Count > 0
+                ? "Seen only in another zone. Nothing to plot here."
+                : "Not seen anywhere yet — walk past one and it will appear here.");
+            return;
+        }
+
+        var highlight = _highlightSelectedInWorld;
+        if (ImGui.Checkbox("Ring these spots in the world", ref highlight))
+            _highlightSelectedInWorld = highlight;
+
+        // Fit to the spread of sightings plus the player, with a floor so a
+        // single point does not blow up to fill the canvas.
+        var minX = points.Min(p => p.X);
+        var maxX = points.Max(p => p.X);
+        var minZ = points.Min(p => p.Z);
+        var maxZ = points.Max(p => p.Z);
+
+        minX = MathF.Min(minX, _playerPos.X);
+        maxX = MathF.Max(maxX, _playerPos.X);
+        minZ = MathF.Min(minZ, _playerPos.Z);
+        maxZ = MathF.Max(maxZ, _playerPos.Z);
+
+        var spanX = MathF.Max(maxX - minX, 20f);
+        var spanZ = MathF.Max(maxZ - minZ, 20f);
+        var span  = MathF.Max(spanX, spanZ) * 1.15f;
+
+        var centreX = (minX + maxX) * 0.5f;
+        var centreZ = (minZ + maxZ) * 0.5f;
+
+        const float canvas = 240f;
+        var origin = ImGui.GetCursorScreenPos();
+        var draw   = ImGui.GetWindowDrawList();
+
+        draw.AddRectFilled(origin, origin + new Vector2(canvas, canvas),
+            ImGui.ColorConvertFloat4ToU32(new Vector4(0.08f, 0.09f, 0.11f, 1f)), 4f);
+        draw.AddRect(origin, origin + new Vector2(canvas, canvas),
+            ImGui.ColorConvertFloat4ToU32(UiHelpers.Dim), 4f);
+
+        Vector2 ToCanvas(float x, float z) => origin + new Vector2(
+            (x - centreX) / span * canvas + canvas * 0.5f,
+            (z - centreZ) / span * canvas + canvas * 0.5f);
+
+        var spotColour = ImGui.ColorConvertFloat4ToU32(SightingColor);
+        foreach (var point in points)
+            draw.AddCircleFilled(ToCanvas(point.X, point.Z), 3.5f, spotColour);
+
+        // Player marker last, so it is never hidden under a spot.
+        var player = ToCanvas(_playerPos.X, _playerPos.Z);
+        draw.AddCircleFilled(player, 4f, ImGui.ColorConvertFloat4ToU32(UiHelpers.Good));
+        draw.AddCircle(player, 6.5f, ImGui.ColorConvertFloat4ToU32(new Vector4(1f, 1f, 1f, 0.85f)), 0, 1.5f);
+
+        ImGui.Dummy(new Vector2(canvas, canvas));
+
+        UiHelpers.Muted(
+            $"{points.Count} spot(s) across roughly {span:F0} yalms. "
+            + "Green is you. Spots are thinned to one per 6 yalms.");
+    }
+
     private void DrawDetail(AggroProfile profile)
     {
         _bnpcSheet ??= Plugin.DataManager.GetExcelSheet<BNpcBase>();
@@ -382,6 +527,9 @@ public sealed class MobViewerTool : ITool
 
             ImGui.EndTable();
         }
+
+        ImGui.Spacing();
+        DrawSightingMap(profile);
 
         ImGui.Spacing();
         UiHelpers.SectionHeader("Measured Envelope");
