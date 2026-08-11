@@ -733,12 +733,16 @@ public sealed class AggroLearningStore
         if (!_config.AutoIgnoreNonMatchingNames)
             return false;
 
-        var prefix = _config.TrackedNamePrefix?.Trim();
-        if (string.IsNullOrEmpty(prefix))
+        var required = _config.TrackedNamePrefix?.Trim();
+        if (string.IsNullOrEmpty(required))
             return false;
 
+        // CONTAINS, not starts-with. Checked against the game's BNpcName sheet:
+        // 129 names carry "Crescent" and exactly one of them — "Bird of the
+        // Crescent" — does not lead with it. A prefix test dropped that mob and
+        // only that mob, silently.
         return string.IsNullOrEmpty(name)
-               || !name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+               || name.IndexOf(required, StringComparison.OrdinalIgnoreCase) < 0;
     }
 
     /// <summary>Either kind of ignore.</summary>

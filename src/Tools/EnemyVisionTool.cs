@@ -546,21 +546,22 @@ public sealed class EnemyVisionTool : ITool
         }
 
         var autoIgnore = _config.AutoIgnoreNonMatchingNames;
-        if (ImGui.Checkbox("Only track mobs named with a prefix", ref autoIgnore))
+        if (ImGui.Checkbox("Only track mobs whose name contains a word", ref autoIgnore))
         {
             _config.AutoIgnoreNonMatchingNames = autoIgnore;
             Plugin.SaveConfiguration();
         }
         UiHelpers.HelpMarker(
-            "Every Occult Crescent field mob is named \"Crescent something\". Anything else is a " +
-            "summon, an add, or scenery — skipped for both drawing and training. This is a live " +
-            "rule, not a stored list, so turning it off brings everything straight back.");
+            "Every Occult Crescent field mob carries \"Crescent\" somewhere in its name. Anything " +
+            "else is a summon, an add, or scenery — skipped for both drawing and training. " +
+            "It matches anywhere in the name, not just the start, so \"Bird of the Crescent\" counts. " +
+            "This is a live rule, not a stored list, so turning it off brings everything straight back.");
 
         if (_config.AutoIgnoreNonMatchingNames)
         {
             ImGui.SetNextItemWidth(160f);
             var prefix = _config.TrackedNamePrefix ?? string.Empty;
-            if (ImGui.InputText("Required name prefix", ref prefix, 32))
+            if (ImGui.InputText("Name must contain", ref prefix, 32))
             {
                 _config.TrackedNamePrefix = prefix;
                 Plugin.SaveConfiguration();
