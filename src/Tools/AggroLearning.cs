@@ -22,6 +22,12 @@ public sealed class Sighting
 [Serializable]
 public sealed class AggroDataFile
 {
+    /// <summary>
+    /// 1 = original. 2 = sightings recorded only while a mob is genuinely idle
+    /// (see MobViewer), which invalidated everything gathered under version 1.
+    /// </summary>
+    public const int CurrentVersion = 2;
+
     public int                Version  { get; set; } = 1;
     public string             SavedAt  { get; set; } = string.Empty;
     public List<AggroProfile> Profiles { get; set; } = new();
@@ -284,8 +290,16 @@ public sealed class AggroLearningStore
     /// </summary>
     public void SetLock(uint baseId, bool locked, float range, float arcDegrees, bool isSound)
     {
+        // Create on demand: a mob may be known only as a placeholder from
+        // having been seen, and refusing to accept a hand-entered value for it
+        // would fail silently, which is the worst possible outcome for a
+        // control the user just typed into.
         if (!_byBaseId.TryGetValue(baseId, out var profile))
-            return;
+        {
+            profile = new AggroProfile { BaseId = baseId };
+            _byBaseId[baseId] = profile;
+            EnsureBins(profile);
+        }
 
         profile.Locked           = locked;
         profile.LockedRange      = MathF.Max(0f, range);
@@ -531,6 +545,21 @@ public sealed class AggroLearningStore
                 foreach (var profile in data.Profiles)
                     _byBaseId[profile.BaseId] = profile;
 
+                // Locations gathered before the idle-only rule are unreliable —
+                // they include mobs mid-fight and mobs walking home after
+                // losing aggro, neither of which is where the mob lives. Drop
+                // them once rather than leave the map polluted forever.
+                if (data.Version < AggroDataFile.CurrentVersion)
+                {
+                    var dropped = _byBaseId.Values.Sum(p => p.Sightings.Count);
+
+                    foreach (var profile in _byBaseId.Values)
+                        profile.Sightings.Clear();
+
+                    Plugin.Log.Information(
+                        $"Cleared {dropped} location(s) recorded before the idle-only rule.");
+                }
+
                 LastSavedAt = string.IsNullOrEmpty(data.SavedAt) ? "unknown" : data.SavedAt;
                 Plugin.Log.Information(
                     $"Loaded {data.Profiles.Count} aggro profile(s) from {Path.GetFileName(path)}.");
@@ -694,6 +723,7 @@ public sealed class AggroLearningStore
 
             var data = new AggroDataFile
             {
+                Version  = AggroDataFile.CurrentVersion,
                 SavedAt  = DateTime.UtcNow.ToString("o"),
                 Profiles = _byBaseId.Values.ToList(),
             };

@@ -73,6 +73,14 @@ public sealed class MobViewerTool : ITool
     /// <summary>Live instances of the selected mob, for the wedge overlay.</summary>
     private List<(Vector3 Position, float Rotation)> _selectedInstances = new();
 
+    /// <summary>
+    /// How long after a fight a mob is assumed to still be walking home. Its
+    /// position during that window is on the return path, not its spawn.
+    /// </summary>
+    private const long ReturnGraceMs = 8000;
+
+    private readonly Dictionary<ulong, long> _lastInCombatAt = new();
+
     /// <summary>Base ids currently in the object table, refreshed each tick.</summary>
     private HashSet<uint> _nearby = new();
 
@@ -128,9 +136,26 @@ public sealed class MobViewerTool : ITool
 
                 nearby.Add(obj.BaseId);
 
-                // Remember the ground this mob type occupies.
-                if (_store.AddSighting(obj.BaseId, name, territory, obj.Position))
-                    _store.MarkDirty();
+                // Only record where a mob LIVES, which means catching it truly
+                // idle. A mob in combat is wherever the fight dragged it, and a
+                // mob that just lost aggro is walking home — neither position
+                // says anything about its spawn. So it must be out of combat
+                // AND clear of the return grace since it last fought.
+                var id  = obj.GameObjectId;
+                var now = Environment.TickCount64;
+
+                if (battleNpc.StatusFlags.HasFlag(StatusFlags.InCombat))
+                {
+                    _lastInCombatAt[id] = now;
+                }
+                else
+                {
+                    var settled = !_lastInCombatAt.TryGetValue(id, out var lastFight)
+                                  || now - lastFight > ReturnGraceMs;
+
+                    if (settled && _store.AddSighting(obj.BaseId, name, territory, obj.Position))
+                        _store.MarkDirty();
+                }
 
                 var foray = ForayLevel.TryGet(obj) ?? 0;
 
@@ -448,6 +473,114 @@ public sealed class MobViewerTool : ITool
     /// zone — the axis labels carry the true extent.
     /// </summary>
     /// <summary>
+    /// Scale diagram of the detection shape: the mob at the origin as a red
+    /// dot, the reach drawn to scale, and the measurements labelled on the
+    /// drawing itself. A picture of "8.4y over 90° in front" is read instantly
+    /// where the same thing as two table rows is not.
+    ///
+    /// The mob always faces UP, so the wedge orientation reads the same for
+    /// every mob regardless of where it happens to be looking in the world.
+    /// </summary>
+    private static void DrawShapeDiagram(DetectionModel model)
+    {
+        const float canvas = 200f;
+        const float pad    = 18f;
+
+        var origin = ImGui.GetCursorScreenPos();
+        var draw   = ImGui.GetWindowDrawList();
+        var centre = origin + new Vector2(canvas * 0.5f, canvas * 0.5f);
+
+        draw.AddRectFilled(origin, origin + new Vector2(canvas, canvas),
+            ImGui.ColorConvertFloat4ToU32(new Vector4(0.08f, 0.09f, 0.11f, 1f)), 4f);
+        draw.AddRect(origin, origin + new Vector2(canvas, canvas),
+            ImGui.ColorConvertFloat4ToU32(UiHelpers.Dim), 4f);
+
+        if (model.Type == DetectionType.Unknown || model.Range <= 0f)
+        {
+            ImGui.Dummy(new Vector2(canvas, canvas));
+            UiHelpers.Muted("No shape to draw yet.");
+            return;
+        }
+
+        // Scale so the reach fills the canvas with a margin for labels.
+        var pixels = canvas * 0.5f - pad;
+        var scale  = pixels / model.Range;
+
+        var shapeColour = ImGui.ColorConvertFloat4ToU32(
+            model.Type == DetectionType.Radius
+                ? new Vector4(0.62f, 0.55f, 0.95f, 0.95f)
+                : new Vector4(0.98f, 0.75f, 0.25f, 0.95f));
+
+        var radius = model.Range * scale;
+
+        // Screen Y grows downwards, so "in front" is negative Y.
+        Vector2 At(float degreesFromFacing, float distance)
+        {
+            var rad = degreesFromFacing * MathF.PI / 180f;
+            return centre + new Vector2(MathF.Sin(rad) * distance, -MathF.Cos(rad) * distance);
+        }
+
+        if (model.Type == DetectionType.Radius)
+        {
+            draw.AddCircle(centre, radius, shapeColour, 48, 2.5f);
+        }
+        else
+        {
+            var half     = model.HalfAngleDegrees;
+            var segments = Math.Max(8, (int)(half / 4f));
+
+            Vector2? previous = null;
+            for (var i = 0; i <= segments; i++)
+            {
+                var angle = -half + (half * 2f) * (i / (float)segments);
+                var point = At(angle, radius);
+
+                if (previous is { } prev)
+                    draw.AddLine(prev, point, shapeColour, 2.5f);
+
+                previous = point;
+            }
+
+            draw.AddLine(centre, At(-half, radius), shapeColour, 2.5f);
+            draw.AddLine(centre, At(half, radius), shapeColour, 2.5f);
+
+            // Angle marker: a small arc near the origin, labelled.
+            var markerRadius = MathF.Min(34f, radius * 0.45f);
+            Vector2? prevMark = null;
+            for (var i = 0; i <= segments; i++)
+            {
+                var angle = -half + (half * 2f) * (i / (float)segments);
+                var point = At(angle, markerRadius);
+
+                if (prevMark is { } pm)
+                    draw.AddLine(pm, point, ImGui.ColorConvertFloat4ToU32(UiHelpers.Dim), 1.5f);
+
+                prevMark = point;
+            }
+
+            var angleLabel = $"{model.FullConeDegrees:F0}°";
+            draw.AddText(At(0f, markerRadius + 4f) - new Vector2(ImGui.CalcTextSize(angleLabel).X * 0.5f, 0f),
+                ImGui.ColorConvertFloat4ToU32(UiHelpers.Dim), angleLabel);
+        }
+
+        // Radius line, drawn along a direction that is inside the shape.
+        var radiusEnd = At(model.Type == DetectionType.Radius ? 90f : 0f, radius);
+        draw.AddLine(centre, radiusEnd, ImGui.ColorConvertFloat4ToU32(new Vector4(1f, 1f, 1f, 0.75f)), 1.5f);
+
+        var rangeLabel = $"{model.Range:F1}y";
+        var labelPos   = (centre + radiusEnd) * 0.5f + new Vector2(4f, -14f);
+        draw.AddText(labelPos, ImGui.ColorConvertFloat4ToU32(new Vector4(1f, 1f, 1f, 0.95f)), rangeLabel);
+
+        // The mob itself, last so nothing covers it.
+        draw.AddCircleFilled(centre, 4.5f, ImGui.ColorConvertFloat4ToU32(new Vector4(1f, 0.25f, 0.25f, 1f)));
+
+        ImGui.Dummy(new Vector2(canvas, canvas));
+        UiHelpers.Muted(model.Type == DetectionType.Radius
+            ? "Red dot is the mob. It detects equally in every direction."
+            : "Red dot is the mob, facing up the screen.");
+    }
+
+    /// <summary>
     /// Lets the user pin a mob's values by hand.
     ///
     /// The learner is deliberately conservative and self-correcting, which
@@ -464,86 +597,88 @@ public sealed class MobViewerTool : ITool
     {
         ImGui.Spacing();
 
-        var locked = profile.Locked;
-        if (ImGui.Checkbox($"Lock these values###limlo-lock-{profile.BaseId}", ref locked))
-        {
-            // Seed the fields from the current best guess so locking is one
-            // click when the measurement already looks right.
-            if (locked && profile.LockedRange <= 0f)
-            {
-                var current = AggroLearningStore.Classify(profile);
-                profile.LockedRange      = current.Range > 0f ? current.Range : _config.EnemyVisionRadius;
-                profile.LockedArcDegrees = current.Type == DetectionType.Radius
-                    ? 90f
-                    : Math.Clamp(current.FullConeDegrees, 5f, 360f);
-                profile.LockedIsSound    = current.Type == DetectionType.Radius;
-            }
-
-            _store.SetLock(profile.BaseId, locked,
-                profile.LockedRange, profile.LockedArcDegrees, profile.LockedIsSound);
-        }
-        UiHelpers.HelpMarker(
-            "Treat these numbers as correct and stop the learner changing them. Use it when you know " +
-            "you get caught from further out than the measurements say. Recorded samples are kept, so " +
-            "unlocking hands the mob back to the evidence.");
-
-        if (!profile.Locked)
+        if (!ImGui.CollapsingHeader($"Set values by hand###limlo-manual-{profile.BaseId}"))
             return;
 
         ImGui.Indent();
 
-        var isSound = profile.LockedIsSound;
-        if (ImGui.RadioButton("Sight (cone in front)", !isSound))
+        // Fields are ALWAYS editable, lock or no lock. Type the values first,
+        // check they look right on the diagram, then lock them — rather than
+        // having to lock before you are allowed to enter anything.
+        if (profile.LockedRange <= 0f)
         {
-            _store.SetLock(profile.BaseId, true, profile.LockedRange, profile.LockedArcDegrees, false);
-        }
-        ImGui.SameLine();
-        if (ImGui.RadioButton("Sound (all directions)", isSound))
-        {
-            _store.SetLock(profile.BaseId, true, profile.LockedRange, profile.LockedArcDegrees, true);
+            var current = AggroLearningStore.Classify(profile);
+            profile.LockedRange      = current.Range > 0f ? current.Range : _config.EnemyVisionRadius;
+            profile.LockedArcDegrees = current.Type == DetectionType.Radius
+                ? 90f
+                : Math.Clamp(current.FullConeDegrees, 5f, 360f);
+            profile.LockedIsSound    = current.Type == DetectionType.Radius;
         }
 
+        var isSound = profile.LockedIsSound;
+        if (ImGui.RadioButton($"Sight (cone)###limlo-sight-{profile.BaseId}", !isSound))
+            Apply(profile, profile.LockedRange, profile.LockedArcDegrees, false);
+        ImGui.SameLine();
+        if (ImGui.RadioButton($"Sound (all round)###limlo-sound-{profile.BaseId}", isSound))
+            Apply(profile, profile.LockedRange, profile.LockedArcDegrees, true);
+
         var range = profile.LockedRange;
-        ImGui.SetNextItemWidth(160f);
-        if (ImGui.DragFloat($"Detection range (yalms)###limlo-lockrange-{profile.BaseId}",
-                            ref range, 0.1f, 0f, EnemyVisionTool.MaxRadius, "%.1f"))
-        {
-            _store.SetLock(profile.BaseId, true, range, profile.LockedArcDegrees, profile.LockedIsSound);
-        }
+        ImGui.SetNextItemWidth(150f);
+        if (ImGui.InputFloat($"Range (yalms)###limlo-range-{profile.BaseId}", ref range, 0.5f, 1f, "%.1f"))
+            Apply(profile, Math.Clamp(range, 0f, EnemyVisionTool.MaxRadius),
+                  profile.LockedArcDegrees, profile.LockedIsSound);
 
         if (!profile.LockedIsSound)
         {
             var arc = profile.LockedArcDegrees;
-            ImGui.SetNextItemWidth(160f);
-            if (ImGui.DragFloat($"Cone angle (degrees)###limlo-lockarc-{profile.BaseId}",
-                                ref arc, 1f, 5f, 360f, "%.0f"))
-            {
-                _store.SetLock(profile.BaseId, true, profile.LockedRange, arc, profile.LockedIsSound);
-            }
+            ImGui.SetNextItemWidth(150f);
+            if (ImGui.InputFloat($"Cone angle (deg)###limlo-arc-{profile.BaseId}", ref arc, 5f, 15f, "%.0f"))
+                Apply(profile, profile.LockedRange, Math.Clamp(arc, 5f, 360f), profile.LockedIsSound);
+
             UiHelpers.HelpMarker("Total width of the wedge, centred on the mob's facing.");
         }
 
-        if (ImGui.SmallButton($"Set from measurement###limlo-lockmeasure-{profile.BaseId}"))
+        if (ImGui.SmallButton($"Copy from measurement###limlo-frommeas-{profile.BaseId}"))
         {
-            // Temporarily read the evidence-based answer, ignoring the lock.
-            var wasLocked = profile.Locked;
+            var wasLocked  = profile.Locked;
             profile.Locked = false;
-            var measured = AggroLearningStore.Classify(profile);
+            var measured   = AggroLearningStore.Classify(profile);
             profile.Locked = wasLocked;
 
             if (measured.Type != DetectionType.Unknown)
             {
-                _store.SetLock(profile.BaseId, true,
-                    measured.Range,
-                    measured.Type == DetectionType.Radius ? profile.LockedArcDegrees : measured.FullConeDegrees,
-                    measured.Type == DetectionType.Radius);
+                Apply(profile,
+                      measured.Range,
+                      measured.Type == DetectionType.Radius ? profile.LockedArcDegrees : measured.FullConeDegrees,
+                      measured.Type == DetectionType.Radius);
             }
         }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Fill these fields from what the samples currently say, then keep editing by hand.");
+            ImGui.SetTooltip("Fill the fields from what the samples currently say, then adjust by hand.");
+
+        ImGui.Spacing();
+
+        var locked = profile.Locked;
+        if (ImGui.Checkbox($"Lock — use these values and stop the learner changing them###limlo-lock-{profile.BaseId}",
+                           ref locked))
+        {
+            _store.SetLock(profile.BaseId, locked,
+                profile.LockedRange, profile.LockedArcDegrees, profile.LockedIsSound);
+        }
+        UiHelpers.HelpMarker(
+            "While locked, these exact values are drawn and no sampling moves them. Use it when you " +
+            "know you get caught from further out than the measurements say. Recorded samples are " +
+            "kept, so unlocking hands the mob back to the evidence.");
+
+        if (!profile.Locked)
+            UiHelpers.Muted("Not locked — the drawing still follows the measurements above.");
 
         ImGui.Unindent();
     }
+
+    /// <summary>Writes edited values through, preserving the current lock state.</summary>
+    private void Apply(AggroProfile profile, float range, float arcDegrees, bool isSound) =>
+        _store.SetLock(profile.BaseId, profile.Locked, range, arcDegrees, isSound);
 
     /// <summary>
     /// Lists the approaches still needed and offers to show them in the world.
@@ -706,8 +841,13 @@ public sealed class MobViewerTool : ITool
         UiHelpers.Muted(model.Reason);
 
         ImGui.Spacing();
+        DrawShapeDiagram(model);
+        ImGui.Spacing();
 
-        if (ImGui.BeginTable("##limlo-mob-detect", 2, ImGuiTableFlags.SizingFixedFit))
+        // Collapsed by default — the diagram and the verdict answer the usual
+        // question, and the numbers behind them are for when they do not.
+        if (ImGui.CollapsingHeader($"Detection details###limlo-detect-{profile.BaseId}")
+            && ImGui.BeginTable("##limlo-mob-detect", 2, ImGuiTableFlags.SizingFixedFit))
         {
             UiHelpers.Row("Proven range", model.Range > 0f ? $"{model.Range:F1}y" : "unknown");
             UiHelpers.Row("Arc",
