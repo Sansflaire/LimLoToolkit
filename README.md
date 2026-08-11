@@ -35,6 +35,13 @@ Settings — it then disappears from the sidebar and stops running.
 | Enemy Vision | Draws each nearby enemy's detection area on the ground — a wedge in front of enemies that only see forwards, a full circle around ones that detect in all directions — and turns it red when you are standing inside it. Includes a training mode that measures each mob's real range by watching pulls. Occult Crescent only. |
 | Mob Viewer | Browse every mob you have met: how it detects you, its measured range and cone, level, HP, hitbox, and the underlying game data. Colour-coded green / amber / red by how solid the measurements are, and any mob can be marked irrelevant to hide it. |
 
+**World overlays** (Settings → World Overlays)
+
+| Overlay | What it does |
+|---------|--------------|
+| Mob silhouettes | Outlines nearby mobs using the game's own targeting silhouette, so it traces the real model rather than a box — red for a mob that can aggro you, black for one you outlevel. Off by default; it writes to the game's render state and clears itself when switched off or unloaded. |
+| Distance above your head | Floats the live distance to your current target over your character, refreshed every frame. The big number is the hitbox-to-hitbox gap, which is what every range in this plugin means; the raw centre-to-centre distance sits underneath. The name turns blue when the target is the mob selected in Mob Viewer, and it can be narrowed to that mob only. |
+
 > **Auto-open is off by default and is opt-in.** It targets and opens a coffer
 > for you once *you* have walked within about 2 yalms of it — it never moves
 > your character. Square Enix does not permit third-party automation, so enable

@@ -45,6 +45,52 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         ImGui.Spacing();
+        UiHelpers.SectionHeader("World Overlays");
+        UiHelpers.Muted("Things drawn on the world itself rather than in this window.");
+        ImGui.Spacing();
+
+        var outlines = _config.ShowMobOutlines;
+        if (ImGui.Checkbox("Outline mobs (silhouettes)", ref outlines))
+        {
+            _config.ShowMobOutlines = outlines;
+            _saveConfig();
+        }
+        UiHelpers.HelpMarker(
+            "Uses the game's own silhouette highlight, so it traces the actual model. Red means the " +
+            "mob can aggro you; black means it cannot, because you outlevel it. The game's palette " +
+            "has no grey, so black is the closest. This writes to the game's render state rather " +
+            "than drawing an overlay, and every outline is removed again when you switch it off or " +
+            "unload the plugin. Requires the Enemy Vision tool to be enabled, and only applies in " +
+            "the Occult Crescent.");
+
+        var headDistance = _config.ShowTargetDistanceOverHead;
+        if (ImGui.Checkbox("Show distance to target above your head", ref headDistance))
+        {
+            _config.ShowTargetDistanceOverHead = headDistance;
+            _saveConfig();
+        }
+        UiHelpers.HelpMarker(
+            "Floats the live distance to whatever mob you have targeted over your character, " +
+            "updated every frame. The big number is the hitbox-to-hitbox gap — the same thing every " +
+            "range in this plugin means — with the raw centre-to-centre distance underneath.");
+
+        if (_config.ShowTargetDistanceOverHead)
+        {
+            ImGui.Indent();
+            var selectedOnly = _config.TargetDistanceSelectedMobOnly;
+            if (ImGui.Checkbox("Only for the mob selected in Mob Viewer", ref selectedOnly))
+            {
+                _config.TargetDistanceSelectedMobOnly = selectedOnly;
+                _saveConfig();
+            }
+            UiHelpers.HelpMarker(
+                "Off, the readout appears for any mob you target. On, it appears only when the " +
+                "targeted mob is the one highlighted in the Mob Viewer list. Either way the name " +
+                "turns blue when the two match.");
+            ImGui.Unindent();
+        }
+
+        ImGui.Spacing();
         UiHelpers.SectionHeader("Mob Viewer");
         UiHelpers.Muted("What the mob list shows. Both on keeps it to what is in front of you.");
         ImGui.Spacing();

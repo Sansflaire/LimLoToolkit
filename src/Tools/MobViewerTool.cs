@@ -11,6 +11,8 @@ using Dalamud.Interface;
 using Lumina.Excel;
 using Lumina.Excel.Sheets;
 
+using CsGameObject = FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject;
+
 namespace LimLoToolkit.Tools;
 
 /// <summary>
@@ -69,6 +71,22 @@ public sealed class MobViewerTool : ITool
     private List<(Vector3 Position, float Rotation)> _selectedInstances = new();
 
     /// <summary>
+    /// The live distance-to-target readout that floats over the player's head.
+    ///
+    /// Built on the game thread every tick and drawn from the snapshot, per the
+    /// tool contract in CLAUDE.md — the framework update runs once per frame, so
+    /// this is frame-fresh without reading game memory during Draw.
+    /// </summary>
+    private readonly record struct HeadReadout(
+        Vector3 Anchor,
+        float   Gap,
+        float   Centre,
+        string  TargetName,
+        bool    IsSelectedMob);
+
+    private HeadReadout? _headReadout;
+
+    /// <summary>
     /// How long after a fight a mob is assumed to still be walking home. Its
     /// position during that window is on the return path, not its spawn.
     /// </summary>
@@ -100,11 +118,15 @@ public sealed class MobViewerTool : ITool
             var instances = new List<(Vector3, float)>();
 
             _bnpcSheet ??= Plugin.DataManager.GetExcelSheet<BNpcBase>();
-            _playerForayLevel = ForayLevel.TryGet(Plugin.ObjectTable.LocalPlayer);
+
+            var player = Plugin.ObjectTable.LocalPlayer;
+            _playerForayLevel = ForayLevel.TryGet(player);
 
             var territory = (ushort)Plugin.ClientState.TerritoryType;
             _territory    = territory;
-            _playerPos    = Plugin.ObjectTable.LocalPlayer?.Position ?? Vector3.Zero;
+            _playerPos    = player?.Position ?? Vector3.Zero;
+
+            _headReadout = BuildHeadReadout(player);
 
 
             foreach (var obj in Plugin.ObjectTable)
@@ -195,6 +217,124 @@ public sealed class MobViewerTool : ITool
     }
 
     /// <summary>
+    /// Works out what, if anything, should float over the player's head this
+    /// frame: the live distance to the mob currently targeted.
+    ///
+    /// The headline number is the hitbox-to-hitbox GAP rather than the raw
+    /// centre-to-centre distance, because every range this plugin records,
+    /// draws, and lets you type in by hand is a gap. Showing centre distance as
+    /// the big number would invite reading it straight off against a measured
+    /// range that does not mean the same thing.
+    /// </summary>
+    private unsafe HeadReadout? BuildHeadReadout(IGameObject? player)
+    {
+        if (!_config.ShowTargetDistanceOverHead || player == null)
+            return null;
+
+        if (Plugin.TargetManager.Target is not IBattleNpc target)
+            return null;
+
+        if (target.BattleNpcKind != BattleNpcSubKind.Combatant || !target.IsValid() || target.IsDead)
+            return null;
+
+        var isSelected = _selectedBaseId != 0 && target.BaseId == _selectedBaseId;
+
+        if (_config.TargetDistanceSelectedMobOnly && !isSelected)
+            return null;
+
+        var centre = Vector3.Distance(player.Position, target.Position);
+        var gap    = MathF.Max(0f, centre - player.HitboxRadius - target.HitboxRadius);
+
+        // GameObject.Height is the model's own height in yalms — a lalafell and
+        // a roegadyn need different anchors or the text sits on the face of one
+        // and a yard over the other. Fall back to a sane constant if it reads
+        // as zero, which happens for a frame or two around a redraw.
+        var height = 2.0f;
+        var native = (CsGameObject*)player.Address;
+        if (native != null && native->Height > 0.1f)
+            height = native->Height;
+
+        var anchor = new Vector3(
+            player.Position.X,
+            player.Position.Y + height + 0.55f,
+            player.Position.Z);
+
+        return new HeadReadout(anchor, gap, centre, target.Name.ToString(), isSelected);
+    }
+
+    /// <summary>
+    /// Draws the head readout: the gap large, the raw distance and the mob's
+    /// name small underneath, on a dark plate so it stays legible over bright
+    /// ground.
+    /// </summary>
+    private void DrawHeadReadout()
+    {
+        if (_headReadout is not { } readout)
+            return;
+
+        if (!Plugin.GameGui.WorldToScreen(readout.Anchor, out var anchor))
+            return;
+
+        var draw     = ImGui.GetForegroundDrawList();
+        var font     = ImGui.GetFont();
+        var baseSize = ImGui.GetFontSize();
+        var bigSize  = baseSize * 1.75f;
+
+        var headline = $"{readout.Gap:F1}y";
+        var detail   = $"gap  ·  {readout.Centre:F1}y centre";
+        var name     = readout.TargetName;
+
+        var headlineSize = ImGui.CalcTextSize(headline) * (bigSize / baseSize);
+        var detailSize   = ImGui.CalcTextSize(detail);
+        var nameSize     = ImGui.CalcTextSize(name);
+
+        const float lineGap = 2f;
+        const float padX    = 8f;
+        const float padY    = 5f;
+
+        var width  = MathF.Max(headlineSize.X, MathF.Max(detailSize.X, nameSize.X));
+        var height = headlineSize.Y + detailSize.Y + nameSize.Y + lineGap * 2f;
+
+        // Anchored by its BOTTOM centre, so the block grows upwards away from
+        // the character rather than creeping down over the head.
+        var topLeft = new Vector2(anchor.X - width * 0.5f, anchor.Y - height);
+
+        draw.AddRectFilled(
+            topLeft - new Vector2(padX, padY),
+            topLeft + new Vector2(width + padX, height + padY),
+            ImGui.ColorConvertFloat4ToU32(new Vector4(0.05f, 0.06f, 0.08f, 0.72f)),
+            5f);
+
+        var accent = ImGui.ColorConvertFloat4ToU32(UiHelpers.Accent);
+
+        draw.AddRect(
+            topLeft - new Vector2(padX, padY),
+            topLeft + new Vector2(width + padX, height + padY),
+            readout.IsSelectedMob ? accent : ImGui.ColorConvertFloat4ToU32(new Vector4(0f, 0f, 0f, 0.55f)),
+            5f, ImDrawFlags.None, 1.5f);
+
+        var y = topLeft.Y;
+
+        draw.AddText(
+            font, bigSize,
+            new Vector2(anchor.X - headlineSize.X * 0.5f, y),
+            ImGui.ColorConvertFloat4ToU32(new Vector4(1f, 1f, 1f, 0.98f)),
+            headline);
+        y += headlineSize.Y + lineGap;
+
+        draw.AddText(
+            new Vector2(anchor.X - detailSize.X * 0.5f, y),
+            ImGui.ColorConvertFloat4ToU32(UiHelpers.Dim),
+            detail);
+        y += detailSize.Y + lineGap;
+
+        draw.AddText(
+            new Vector2(anchor.X - nameSize.X * 0.5f, y),
+            ImGui.ColorConvertFloat4ToU32(readout.IsSelectedMob ? UiHelpers.Accent : UiHelpers.Dim),
+            name);
+    }
+
+    /// <summary>
     /// Draws the approach angles still missing for the selected mob, as pink
     /// wedges around each live instance of it. Walk into one and it fills in.
     ///
@@ -209,6 +349,10 @@ public sealed class MobViewerTool : ITool
     /// </summary>
     public void DrawOverlay()
     {
+        // Independent of the wedges below — the readout is wanted whether or not
+        // a mob is selected or has angles left to fill.
+        DrawHeadReadout();
+
         if (!_showMissingAngles || _selectedBaseId == 0)
             return;
 

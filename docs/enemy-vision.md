@@ -226,6 +226,37 @@ The `ForayInfo` read follows the same approach as
 [BOCCHI](https://github.com/OhKannaDuh/BOCCHI)'s `KnowledgeThreat`, which uses it
 for its Ninja Hide logic and pins the Knowledge cap at 40.
 
+## Mob silhouettes — the game's own outline
+
+Switched on in **Settings → World Overlays**. It puts the game's targeting
+silhouette around every nearby mob: **red** for one that can aggro you, **black**
+for one you outlevel. The palette is fixed by the game at eight values (None,
+Red, Green, Blue, Yellow, Orange, Magenta, Black) and contains no grey, so black
+is the closest available "harmless".
+
+**Set it with `GameObject.Highlight(ObjectHighlightColor, bool includeMount)` —
+never by writing `DrawObject.OutlineColor`.** That property is a bitfield
+occupying only the high nibble of `DrawObject.OutlineFlags` (`+0x89`), confirmed
+from the IL of its getter:
+
+```
+ldarg.0; ldfld OutlineFlags; ldc.i4.4; ldc.i4.4; call GetBitfieldValue
+```
+
+Assigning it therefore sets four bits, leaves the low nibble at zero, and
+renders nothing. FFXIVClientStructs' own summary on the property says to use
+`Highlight` instead, which is `VirtualFunction` index 26 — the game's real
+routine — and which additionally covers the mob's weapon, mount and ornament.
+The plugin shipped the direct write once and the outlines never appeared; see
+[BROKEN.md 011](../BROKEN.md).
+
+This writes to game render state rather than drawing an overlay, so everything
+it touches is tracked and reset to `None` when the mob leaves range, when the
+feature is switched off, and on plugin unload. The colour is re-asserted every
+tick rather than cached: the game drives the same field for its own target
+highlight, so a cached "already red" goes stale the moment the mob is targeted
+and untargeted.
+
 ## Ignoring irrelevant mobs
 
 Mobs can be marked irrelevant by `BNpcBase` id, from the Enemy Vision table or

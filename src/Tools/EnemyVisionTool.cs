@@ -551,20 +551,12 @@ public sealed class EnemyVisionTool : ITool
             Plugin.SaveConfiguration();
         }
 
-        var outlines = _config.ShowMobOutlines;
-        if (ImGui.Checkbox("Outline mobs in the world", ref outlines))
-        {
-            _config.ShowMobOutlines = outlines;
-            if (!outlines)
-                _outlines.ClearAll();
-            Plugin.SaveConfiguration();
-        }
-        UiHelpers.HelpMarker(
-            "Uses the game's own silhouette highlight, so it traces the actual model. Red means the " +
-            "mob can aggro you; black means it cannot, because you outlevel it. The game's palette " +
-            "has no grey, so black is the closest. Off by default — this writes to the game's render " +
-            "state rather than drawing an overlay, and every outline is removed again when you switch " +
-            "it off or unload the plugin.");
+        // Mob silhouettes live in Settings alongside the other world overlays.
+        // One switch, one home — a second copy here would be a second place to
+        // look when it is not doing what was expected.
+        UiHelpers.Muted(_config.ShowMobOutlines
+            ? $"Mob silhouettes are ON ({_outlines.OutlinedCount} outlined right now). Switch them off in Settings."
+            : "Mob silhouettes are off. Switch them on in Settings, under World Overlays.");
 
         var ignoreOutleveled = _config.IgnoreOutleveledEnemies;
         if (ImGui.Checkbox("Ignore enemies you outlevel", ref ignoreOutleveled))

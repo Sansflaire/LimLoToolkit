@@ -78,6 +78,22 @@ public sealed class Configuration : IPluginConfiguration
     /// </summary>
     public bool ShowMobOutlines { get; set; } = false;
 
+    // --- Mob Viewer ---
+
+    /// <summary>
+    /// Float the live distance to the current target above the player's head,
+    /// refreshed every frame. On by default — it only appears while a mob is
+    /// actually targeted, so it costs nothing the rest of the time.
+    /// </summary>
+    public bool ShowTargetDistanceOverHead { get; set; } = true;
+
+    /// <summary>
+    /// Show the readout only when the target is the mob selected in Mob Viewer.
+    /// Off by default: while measuring one mob the reading is wanted for
+    /// whatever is being targeted, and narrowing it is the unusual case.
+    /// </summary>
+    public bool TargetDistanceSelectedMobOnly { get; set; } = false;
+
     // --- Mob Viewer list filters ---
 
     /// <summary>Show only mob types currently in the object table.</summary>

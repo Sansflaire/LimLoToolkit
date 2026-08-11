@@ -12,11 +12,20 @@ namespace LimLoToolkit.Tools;
 /// for targeting, so it traces the actual model rather than approximating it
 /// with a box.
 ///
-/// **Mechanism.** <c>GameObject-&gt;DrawObject-&gt;OutlineColor</c>, an
-/// <c>ObjectHighlightColor</c>. The palette is fixed by the game and offers
-/// exactly eight values: None, Red, Green, Blue, Yellow, Orange, Magenta,
-/// Black. There is no grey, so Black is used for "won't aggro" — it reads as a
-/// dark rim against most terrain and is unmistakably not the red one.
+/// **Mechanism.** <c>GameObject.Highlight(ObjectHighlightColor, includeMount)</c>,
+/// virtual function 26 on the object's vtable. The palette is fixed by the game
+/// and offers exactly eight values: None, Red, Green, Blue, Yellow, Orange,
+/// Magenta, Black. There is no grey, so Black is used for "won't aggro" — it
+/// reads as a dark rim against most terrain and is unmistakably not the red one.
+///
+/// **Why not write <c>DrawObject-&gt;OutlineColor</c> directly.** That property is
+/// a bitfield occupying only the HIGH nibble of <c>DrawObject.OutlineFlags</c>
+/// (confirmed from the IL of its getter: <c>ldfld OutlineFlags; ldc.i4.4;
+/// ldc.i4.4; call GetBitfield</c>). Setting it leaves the low nibble untouched
+/// and nothing renders. ClientStructs' own summary on the property says to use
+/// <c>Highlight</c> instead, which also covers the mob's weapon and mount. This
+/// plugin did write the property directly at first and the outlines never
+/// appeared — see BROKEN.md.
 ///
 /// **Restoring.** This writes to game state, so anything it touches must be put
 /// back. Every outlined object is tracked and reset to None when it leaves
@@ -31,7 +40,13 @@ public sealed class MobOutlines
 
     public int OutlinedCount => _outlined.Count;
 
-    /// <summary>Applies an outline, remembering the object so it can be cleared.</summary>
+    /// <summary>
+    /// Applies an outline, remembering the object so it can be cleared.
+    ///
+    /// Re-asserted every tick rather than cached: the game drives this same
+    /// field for its own target highlight, so a cached "already red" would go
+    /// stale the moment the player targets and untargets the mob.
+    /// </summary>
     public unsafe void Apply(IGameObject obj, bool canAggro)
     {
         try
@@ -40,9 +55,9 @@ public sealed class MobOutlines
             if (native == null || native->DrawObject == null)
                 return;
 
-            native->DrawObject->OutlineColor = canAggro
-                ? ObjectHighlightColor.Red
-                : ObjectHighlightColor.Black;
+            native->Highlight(
+                canAggro ? ObjectHighlightColor.Red : ObjectHighlightColor.Black,
+                includeMount: true);
 
             _outlined.Add(obj.GameObjectId);
         }
@@ -93,6 +108,11 @@ public sealed class MobOutlines
         _outlined.Clear();
     }
 
+    /// <summary>
+    /// Resolves the id through the live object table before touching it — an
+    /// object that despawned while outlined must not be written through a
+    /// remembered address.
+    /// </summary>
     private unsafe void ClearOne(ulong gameObjectId)
     {
         try
@@ -104,7 +124,7 @@ public sealed class MobOutlines
 
                 var native = (GameObject*)obj.Address;
                 if (native != null && native->DrawObject != null)
-                    native->DrawObject->OutlineColor = ObjectHighlightColor.None;
+                    native->Highlight(ObjectHighlightColor.None, includeMount: true);
 
                 return;
             }
@@ -115,4 +135,3 @@ public sealed class MobOutlines
         }
     }
 }
-
