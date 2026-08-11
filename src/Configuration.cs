@@ -72,9 +72,13 @@ public sealed class Configuration : IPluginConfiguration
     // --- Aggro training ---
 
     /// <summary>
-    /// Watch every nearby enemy each frame and record the geometry of any pull
-    /// onto the player. Off by default — it keeps per-enemy history buffers, so
-    /// there is no reason to run it once a mob is solved.
+    /// Master switch for ALL data collection: pulls, non-detections, and mob
+    /// locations. Nothing is recorded or updated while this is off — the plugin
+    /// only draws what it already knows.
+    ///
+    /// Off by default. It keeps per-enemy history buffers while running, and
+    /// once a mob is solved or its values are locked there is nothing left to
+    /// gather.
     /// </summary>
     public bool AggroTrainingEnabled { get; set; } = false;
 

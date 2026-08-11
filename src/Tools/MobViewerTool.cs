@@ -146,9 +146,11 @@ public sealed class MobViewerTool : ITool
 
                 if (battleNpc.StatusFlags.HasFlag(StatusFlags.InCombat))
                 {
+                    // Tracked even with collection off, so switching it on
+                    // mid-fight does not immediately record a combat position.
                     _lastInCombatAt[id] = now;
                 }
-                else
+                else if (_config.AggroTrainingEnabled)
                 {
                     var settled = !_lastInCombatAt.TryGetValue(id, out var lastFight)
                                   || now - lastFight > ReturnGraceMs;
@@ -718,11 +720,20 @@ public sealed class MobViewerTool : ITool
 
         if (points.Count == 0)
         {
-            UiHelpers.Muted(profile.Sightings.Count > 0
-                ? "Seen only in another zone. Nothing to plot here."
-                : "Not seen anywhere yet — walk past one and it will appear here.");
+            if (!_config.AggroTrainingEnabled)
+                UiHelpers.ColoredWrapped(UiHelpers.Warn,
+                    "Data collection is off, so no locations are being recorded. Turn on "
+                    + "\"Collect and update mob data\" in Enemy Vision.");
+            else
+                UiHelpers.Muted(profile.Sightings.Count > 0
+                    ? "Seen only in another zone. Nothing to plot here."
+                    : "Not seen anywhere yet — walk past one while it is idle and it will appear here.");
+
             return;
         }
+
+        if (!_config.AggroTrainingEnabled)
+            UiHelpers.Muted("Data collection is off — this shows what was already recorded.");
 
 
         // Fit to the spread of sightings plus the player, with a floor so a

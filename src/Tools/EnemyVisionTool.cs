@@ -699,7 +699,7 @@ public sealed class EnemyVisionTool : ITool
         UiHelpers.SectionHeader("Training Mode");
 
         var training = _config.AggroTrainingEnabled;
-        if (ImGui.Checkbox("Learn real ranges by watching pulls", ref training))
+        if (ImGui.Checkbox("Collect and update mob data", ref training))
         {
             _config.AggroTrainingEnabled = training;
             if (!training)
@@ -707,9 +707,10 @@ public sealed class EnemyVisionTool : ITool
             Plugin.SaveConfiguration();
         }
         UiHelpers.HelpMarker(
-            "Watches every nearby enemy each frame. When one pulls onto you, it records how " +
-            "far away you were and what angle you were at relative to its facing. Leave it " +
-            "off once a mob is solved — it keeps per-enemy history buffers while running.");
+            "The master switch for everything the plugin records: pulls, non-detections, and mob " +
+            "locations. With it off nothing is written or changed — the plugin only draws what it " +
+            "already knows. Turn it on while you are deliberately measuring, and off once a mob is " +
+            "solved or its values are locked.");
 
         if (!_config.AggroTrainingEnabled)
         {
