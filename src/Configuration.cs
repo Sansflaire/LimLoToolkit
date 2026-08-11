@@ -21,7 +21,7 @@ public sealed class Configuration : IPluginConfiguration
     /// into it — see <see cref="Migrate"/>. A new field alone does not need a
     /// bump; a missing property already picks up its initializer.
     /// </summary>
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
 
     public int Version { get; set; } = 1;
 
@@ -79,7 +79,12 @@ public sealed class Configuration : IPluginConfiguration
     /// anywhere in its data files, so this is a tunable guess, not a fact.
     /// See docs/enemy-vision.md.
     /// </summary>
-    public float EnemyVisionRadius { get; set; } = 12.0f;
+    /// <remarks>
+    /// 8 yalms, because that is what the confirmed mobs actually measure at —
+    /// every one of the 21 locked so far sits at 8.0 (Wamoura at 8.5). It began
+    /// as 12, which was a guess made before there was any evidence.
+    /// </remarks>
+    public float EnemyVisionRadius { get; set; } = 8.0f;
 
     /// <summary>Width of the sight cone in degrees. Also an estimate.</summary>
     public float EnemyVisionConeDegrees { get; set; } = 90.0f;
@@ -276,6 +281,16 @@ public sealed class Configuration : IPluginConfiguration
         // migration runs once and the version is saved immediately.
         if (Version < 3)
             FollowGroundMesh = false;
+
+        // v3 -> v4: the fallback range default moves 12 -> 8, which is what the
+        // confirmed mobs actually measure at.
+        //
+        // Only a file still holding the OLD DEFAULT is moved. A slider somebody
+        // deliberately set to 15 or to 6 is their reading of their own game and
+        // is none of our business — unlike the v3 case, this setting has existed
+        // long enough to have been chosen on purpose.
+        if (Version < 4 && MathF.Abs(EnemyVisionRadius - 12.0f) < 0.001f)
+            EnemyVisionRadius = 8.0f;
 
         Version = CurrentVersion;
         return true;

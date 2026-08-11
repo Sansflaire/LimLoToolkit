@@ -56,8 +56,8 @@ One tunable distance, applied to every enemy, drawn in the correct shape:
 
 | Setting | Default | Basis |
 |---------|---------|-------|
-| Detection range | 12y | A starting guess. **Tune it by eye.** |
-| Sight cone | 90° | The figure the community uses for Deep Dungeon sight mobs |
+| Detection range | 8y | What the confirmed mobs measure at — all 21 locked so far sit at 8.0, Wamoura at 8.5. Was 12y, a guess made before there was evidence |
+| Sight cone | 90° | The figure the community uses for Deep Dungeon sight mobs, and what every confirmed cone has come out at |
 
 Two details that make it more accurate than a naive circle:
 
