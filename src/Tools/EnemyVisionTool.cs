@@ -708,17 +708,34 @@ public sealed class EnemyVisionTool : ITool
             Plugin.SaveConfiguration();
         }
 
-        var ground = _config.FollowGroundMesh;
-        if (ImGui.Checkbox("Lay the shapes on the ground", ref ground))
+        ImGui.Spacing();
+        UiHelpers.Muted("Draw the shapes:");
+
+        // A two-way choice rather than a checkbox: neither is the "off" state,
+        // they are two ways of drawing the same shape, and a tickbox would imply
+        // one of them is the absence of the other.
+        if (ImGui.RadioButton("Straight outwards", !_config.FollowGroundMesh))
         {
-            _config.FollowGroundMesh = ground;
+            _config.FollowGroundMesh = false;
             Plugin.SaveConfiguration();
         }
         UiHelpers.HelpMarker(
-            "Follows the terrain instead of drawing the shape flat at the enemy's own height, so a "
-            + "ring on a slope sits on the slope. Sampled from the game's own collision, cached per "
-            + "enemy and re-sampled only when one moves, so standing still costs nothing. Switch it "
-            + "off if it ever looks wrong on odd geometry — the flat shape covers the same ground.");
+            "Flat, at the enemy's own height. Clean and cheap, and on level ground it is exactly "
+            + "right. On a slope the ring hovers over the downhill side and sinks into the uphill "
+            + "one.");
+
+        ImGui.SameLine();
+
+        if (ImGui.RadioButton("On the floor", _config.FollowGroundMesh))
+        {
+            _config.FollowGroundMesh = true;
+            Plugin.SaveConfiguration();
+        }
+        UiHelpers.HelpMarker(
+            "Follows the terrain, so the shape sits on whatever is underneath it. Sampled from the "
+            + "game's own collision, cached per enemy and re-sampled only when one moves, so "
+            + "standing still costs nothing. Falls back to flat for an enemy not sampled yet, and "
+            + "over a hole or unloaded ground.");
 
         // Mob silhouettes live in Settings alongside the other world overlays.
         // One switch, one home — a second copy here would be a second place to
