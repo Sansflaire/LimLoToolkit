@@ -58,50 +58,68 @@ game uses to place its own minimap markers, so distances match the map exactly
 at every zoom level.
 
 **Rotation.** Screen Y grows downward and so does world +Z when the map is
-north-up, so with `NorthLockedUp` the offset is simply `(dx, dz) * scale` — no
-negation, no swap.
+north-up, so with a north-up minimap the offset is simply `(dx, dz) * scale` —
+no negation, no swap. This is the default and the case verified against a real
+client.
 
-With the map free to turn, it turns so the camera's direction points up. Writing
-the camera yaw as ψ and using the plugin's established facing convention
-(`facing = (sin r, cos r)`, from `EnemyVisionTool.FacingVector`), we need the
-rotation φ with
+With the map free to turn, it turns so the direction the **character** faces
+points up. Writing the character's facing as r and using the plugin's
+established convention (`facing = (sin r, cos r)`, from
+`EnemyVisionTool.FacingVector`), we need the rotation phi with
 
 ```
-R(φ) · (sin ψ, cos ψ) = (0, -1)      // camera direction maps to screen "up"
-⇒ sin(ψ - φ) = 0 and cos(ψ - φ) = -1
-⇒ φ = ψ - π
+R(phi) . (sin r, cos r) = (sin(r - phi), cos(r - phi)) = (0, -1)
+=> r - phi = pi
+=> phi = r - pi
 ```
 
-Check: ψ = 0 is the camera looking toward +Z. Something at +dz should appear
-*above* the player. `R(-π)·(0, dz) = (0, -dz)` — up. ✓
+Check: r = 0 is the character facing +Z. Something at +dz (in front) should
+appear above the player. `R(-pi).(0, dz) = (0, -dz)` — up. ✓
 
-ψ comes from `CameraManager.Instance()->GetActiveCamera()->DirH` (`+0x140`).
+### Two things this got wrong, and why
 
-## The one unverified step
+**It used the camera, not the character.** The first version took the angle from
+`Camera.DirH`. Swinging the camera around a stationary character then rotated
+every dot while the minimap itself stayed put — reported as "as I turn my
+camera, the dots shift around". The minimap follows the character.
 
-**Whether `Camera.DirH` is the direction the camera looks toward or the
-direction from the target to the camera** cannot be settled from the struct
-definitions — the two differ by π, and its zero point and sign are likewise
-unconfirmed. Everything else above is certain.
+**`NorthLockedUp` is not trusted.** On 2026-08-11, four screenshots with the
+character facing north, south, east and west showed a minimap whose terrain did
+not move at all — plainly north-up — while `Atk2DNaviMap.NorthLockedUp`
+(`+0x134C`) read false and a rotation was applied anyway. Either the field means
+something other than its name, or it is not the whole story.
 
-So the tool does not hide the guess:
+So the plugin **asks** instead: "My minimap turns with my character", off by
+default. An auto-detection that cannot be validated is worse than a setting.
+The field's value is still shown in the Orientation table, labelled
+`(not trusted)`, so the discrepancy stays visible.
 
-- **Rotation offset** (−180°…180°) and **Mirror left/right** in the Orientation
-  panel correct it in one move.
-- While that panel is open the overlay draws the frame it is using: a crosshair
-  on the computed centre, a ring on the computed edge, and a red tick where it
-  believes north is. The crosshair should sit on the player arrow and the tick
-  should agree with the minimap's compass.
-- The panel lists the live values read — scaling, north-lock state, cone
-  rotation, `DirH`, and the rotation actually applied.
+This is the same trap as the Glamour Dresser `GlamourDresserItemSetUnlockBits`
+polarity noted in `devPlugins/CLAUDE.md`: a plausibly-named boolean whose
+meaning must be verified empirically before anything is gated on it.
 
-**Test north-lock first.** With north locked there is no rotation term at all,
-so it isolates the scale and the mirror. If it is right with north locked and
-wrong when unlocked, the fault is in the `DirH` convention and the rotation
-offset is the knob — try 180 first.
+### Settling it properly
 
-Once confirmed in game, bake the correct value into the defaults in
-`Configuration` and reduce this section to a note.
+`Atk2DNaviMap.PlayerPinRotation` is the rotation the game applies to the player
+arrow, which is the character's facing expressed in minimap space. That makes
+
+```
+map rotation = PlayerPinRotation - characterFacing
+```
+
+fall out for both kinds of minimap with no boolean involved at all: north-up
+gives a constant, character-up gives -facing. The unknown is the constant offset
+and sign between `AtkResNode.Rotation`'s convention and the world angle.
+
+While the Orientation panel is open the tool logs, once a second at
+**Information** (not Debug — Dalamud filters Debug out, see BROKEN 008):
+
+```
+[MinimapRadar] facing= pin= cone= dirH= northLocked= rotatesSetting= applied= scale= centre= r=
+```
+
+Two samples at known facings resolve the constant and the sign. Once confirmed,
+the setting can go away and this can decide for itself.
 
 ## Colours
 

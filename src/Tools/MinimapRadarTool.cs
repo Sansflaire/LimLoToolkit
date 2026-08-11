@@ -39,14 +39,14 @@ namespace LimLoToolkit.Tools;
 ///
 /// With the map locked north, world +X is screen right and world +Z is screen
 /// down, so the offset is simply <c>(dx, dz) * scale</c>. With it unlocked the
-/// map turns so the camera's direction points up, which is a rotation of
-/// <c>DirH - pi</c> applied to that same offset (derivation in the doc).
+/// map turns so the direction the CHARACTER faces points up, which is a
+/// rotation of <c>playerRotation - pi</c> applied to that same offset.
 ///
-/// **The rotation sign is the one thing that could not be verified without the
-/// game running**, because it depends on the convention of
-/// <c>Camera.DirH</c>. Hence the calibration controls: if the dots orbit the
-/// wrong way, one toggle fixes it. The centre and the scale come straight from
-/// the game's own marker fields and are not in doubt.
+/// **It follows the character, not the camera.** This shipped using
+/// <c>Camera.DirH</c> and was wrong: swinging the camera around a stationary
+/// character left the minimap still while every dot rotated. If a future change
+/// makes the dots drift when the camera moves but the character does not, this
+/// is the line that regressed.
 /// </summary>
 public sealed class MinimapRadarTool : ITool
 {
@@ -92,7 +92,9 @@ public sealed class MinimapRadarTool : ITool
         float   scale,
         bool    northLocked,
         float   coneRotation,
+        float   pinRotation,
         float   cameraDirH,
+        float   playerRotation,
         float   appliedRotation)
     {
         public bool    Found           { get; } = found;
@@ -101,7 +103,10 @@ public sealed class MinimapRadarTool : ITool
         public float   Scale           { get; } = scale;
         public bool    NorthLocked     { get; } = northLocked;
         public float   ConeRotation    { get; } = coneRotation;
+        /// <summary>The player arrow's rotation. The key to automating this.</summary>
+        public float   PinRotation     { get; } = pinRotation;
         public float   CameraDirH      { get; } = cameraDirH;
+        public float   PlayerRotation  { get; } = playerRotation;
         public float   AppliedRotation { get; } = appliedRotation;
     }
 
@@ -120,6 +125,9 @@ public sealed class MinimapRadarTool : ITool
     /// overlay draws, so the frame being used is visible instead of inferred.
     /// </summary>
     private bool _showCalibrationOverlay;
+
+    /// <summary>Rate limit for <see cref="LogRawValues"/>.</summary>
+    private long _lastLogAt;
 
     public MinimapRadarTool(Configuration config, AggroLearningStore store)
     {
@@ -161,7 +169,7 @@ public sealed class MinimapRadarTool : ITool
                 return;
             }
 
-            _state = ReadMinimap();
+            _state = ReadMinimap(player.Rotation);
             if (!_state.Found)
             {
                 _blips = blips;
@@ -283,7 +291,7 @@ public sealed class MinimapRadarTool : ITool
     /// <c>Atk2DNaviMap</c> or the player-pin node — nothing here is a constant
     /// somebody measured off a screenshot.
     /// </summary>
-    private unsafe MinimapState ReadMinimap()
+    private unsafe MinimapState ReadMinimap(float playerRotation)
     {
         // Dalamud hands back a wrapper rather than a raw pointer; it carries the
         // null and visibility checks, and the address converts implicitly for
@@ -328,11 +336,33 @@ public sealed class MinimapRadarTool : ITool
         }
 
         // Locked north: the map never turns, so world offsets go straight on.
-        // Otherwise the map turns so the camera direction points up, which is a
-        // rotation of DirH - pi. See the class summary.
-        var rotation = map.NorthLockedUp
-            ? 0f
-            : dirH - MathF.PI;
+        //
+        // Otherwise the map turns so the direction the CHARACTER faces points
+        // up. Not the camera — that was the original bug. Swinging the camera
+        // around a stationary character left the map still while the dots
+        // rotated, which is what "the dots shift around as I turn" was.
+        //
+        // Wanting the facing f = (sin r, cos r) to land on screen "up" (0,-1):
+        //     R(phi) . (sin r, cos r) = (sin(r - phi), cos(r - phi)) = (0, -1)
+        //  => r - phi = pi
+        //  => phi = r - pi
+        //
+        // NorthLockedUp is DELIBERATELY NOT USED to decide this. Observed
+        // 2026-08-11 across four screenshots (character facing N, S, E and W):
+        // the minimap's terrain did not turn at all, so the map was north-up,
+        // yet this field read false and a rotation was applied — which is the
+        // bug that was reported. Either the field means something other than
+        // its name or it is not the whole story.
+        //
+        // An auto-detection that cannot be validated is worse than an explicit
+        // setting, so the user says which minimap they have and the field is
+        // only reported in the diagnostics. The raw values are logged while the
+        // Orientation panel is open; once the relationship between
+        // PlayerPinRotation and the character's facing is confirmed from real
+        // numbers, this can go back to deciding for itself.
+        var rotation = _config.MinimapRotatesWithCharacter
+            ? playerRotation - MathF.PI
+            : 0f;
 
         rotation += _config.MinimapRotationOffsetDegrees * MathF.PI / 180f;
 
@@ -343,7 +373,9 @@ public sealed class MinimapRadarTool : ITool
             scale:           map.MarkerPositionScaling * uiScale,
             northLocked:     map.NorthLockedUp,
             coneRotation:    map.PlayerConeRotation,
+            pinRotation:     map.PlayerPinRotation,
             cameraDirH:      dirH,
+            playerRotation:  playerRotation,
             appliedRotation: rotation);
     }
 
@@ -457,6 +489,46 @@ public sealed class MinimapRadarTool : ITool
         DrawCalibration();
     }
 
+    /// <summary>
+    /// Writes the raw minimap numbers to the Dalamud log once a second while
+    /// the Orientation panel is open.
+    ///
+    /// Deliberately at Information, not Debug: Dalamud filters Debug out by
+    /// default, so a diagnostic logged there is invisible in the field exactly
+    /// when it is needed. That lesson is already in BROKEN.md (008).
+    ///
+    /// It exists to settle how PlayerPinRotation relates to the character's
+    /// facing, which is what would let the north-up question be answered
+    /// automatically instead of asked.
+    /// </summary>
+    private void LogRawValues()
+    {
+        if (!_state.Found)
+            return;
+
+        var now = Environment.TickCount64;
+        if (now - _lastLogAt < 1000)
+            return;
+
+        _lastLogAt = now;
+
+        const float toDegrees = 180f / MathF.PI;
+
+        Plugin.Log.Information(
+            "[MinimapRadar] facing={0:F1} pin={1:F1} cone={2:F1} dirH={3:F1} "
+            + "northLocked={4} rotatesSetting={5} applied={6:F1} scale={7:F2} centre=({8:F0},{9:F0}) r={10:F0}",
+            _state.PlayerRotation  * toDegrees,
+            _state.PinRotation     * toDegrees,
+            _state.ConeRotation    * toDegrees,
+            _state.CameraDirH      * toDegrees,
+            _state.NorthLocked,
+            _config.MinimapRotatesWithCharacter,
+            _state.AppliedRotation * toDegrees,
+            _state.Scale,
+            _state.Centre.X, _state.Centre.Y,
+            _state.Radius);
+    }
+
     private void DrawStatus()
     {
         UiHelpers.SectionHeader("Status");
@@ -504,6 +576,8 @@ public sealed class MinimapRadarTool : ITool
         if (!_showCalibrationOverlay)
             return;
 
+        LogRawValues();
+
         ImGui.Indent();
 
         UiHelpers.Muted(
@@ -516,6 +590,22 @@ public sealed class MinimapRadarTool : ITool
             + "where the radar thinks the centre is, a ring on where it thinks the edge is, and a "
             + "red tick pointing at where it thinks north is. The crosshair should sit on your "
             + "player arrow and the red tick should agree with the minimap's own compass.");
+
+        ImGui.Spacing();
+
+        var rotates = _config.MinimapRotatesWithCharacter;
+        if (ImGui.Checkbox("My minimap turns with my character", ref rotates))
+        {
+            _config.MinimapRotatesWithCharacter = rotates;
+            Plugin.SaveConfiguration();
+        }
+        UiHelpers.HelpMarker(
+            "Leave this OFF if your minimap stays north-up — the compass fixed, the terrain "
+            + "still as you turn. That is the default and the common setup. Turn it ON only if the "
+            + "map itself spins as your character turns.\n\n"
+            + "This is asked rather than detected: the game field that should answer it reported "
+            + "\"not locked\" for a minimap that demonstrably never turned, so it is shown in the "
+            + "table below but not acted on.");
 
         ImGui.Spacing();
 
@@ -556,9 +646,11 @@ public sealed class MinimapRadarTool : ITool
             UiHelpers.Row("Centre on screen",   $"{_state.Centre.X:F0}, {_state.Centre.Y:F0}");
             UiHelpers.Row("Radius",             $"{_state.Radius:F0} px");
             UiHelpers.Row("Yalms to pixels",    $"{_state.Scale:F2}");
-            UiHelpers.Row("North locked",       _state.NorthLocked ? "Yes" : "No");
+            UiHelpers.Row("Game says north-locked", (_state.NorthLocked ? "Yes" : "No") + " (not trusted)");
+            UiHelpers.Row("Player pin",         $"{_state.PinRotation * 180f / MathF.PI:F1}°");
             UiHelpers.Row("Player cone",        $"{_state.ConeRotation * 180f / MathF.PI:F1}°");
-            UiHelpers.Row("Camera DirH",        $"{_state.CameraDirH * 180f / MathF.PI:F1}°");
+            UiHelpers.Row("Your facing",        $"{_state.PlayerRotation * 180f / MathF.PI:F1}°");
+            UiHelpers.Row("Camera DirH",        $"{_state.CameraDirH * 180f / MathF.PI:F1}° (not used)");
             UiHelpers.Row("Rotation applied",   $"{_state.AppliedRotation * 180f / MathF.PI:F1}°");
             ImGui.EndTable();
         }
