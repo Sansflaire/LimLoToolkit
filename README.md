@@ -33,6 +33,7 @@ Settings — it then disappears from the sidebar and stops running.
 | Coffer Lines | Draws a line from you to each nearby treasure coffer in the Occult Crescent — brown for bronze, silver for silver. Each grade toggles separately. Optionally targets and opens a coffer once you walk up to it. Everything pauses in combat, and the tool does nothing outside South Horn and North Horn. |
 
 | Enemy Vision | Draws each nearby enemy's detection area on the ground — a wedge in front of enemies that only see forwards, a full circle around ones that detect in all directions — and turns it red when you are standing inside it. Includes a training mode that measures each mob's real range by watching pulls. Occult Crescent only. |
+| Minimap Radar | Puts a dot on the game's own minimap for every nearby mob — red for one that can see you right now, amber for one whose range is not settled, grey for one never measured. Mobs past the edge are pinned to the rim so you still know which way they are. Nothing is written to the game's UI; the dots are drawn on top. Occult Crescent only. |
 | Mob Viewer | Browse every mob with confirmed detection values: how it detects you, its range and cone, level, HP, hitbox, where it lives, and the underlying game data. Any mob can be hidden. |
 
 **World overlays** (Settings → World Overlays)

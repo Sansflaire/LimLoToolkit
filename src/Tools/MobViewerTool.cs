@@ -55,10 +55,14 @@ public sealed class MobViewerTool : ITool
     private ushort  _territory;
     private Vector3 _playerPos;
 
-    // NOTE: this tool used to place markers on the game's own map. It was
-    // removed at the user's request — the markers rendered as large red flags
-    // and covered the map. Nothing here writes to the game's UI any more.
+    // NOTE: this tool used to place markers on the game's own map, through
+    // AgentMap. It was removed at the user's request — they rendered as large
+    // red flags and covered the map. Nothing here writes to the game's UI.
     // Sightings are shown only on the plugin's own plot below.
+    //
+    // Minimap dots came back in 0.20.0 as MinimapRadarTool, but by DRAWING OVER
+    // the minimap rather than adding real markers, so the size is ours to choose
+    // and there is nothing to clean up. Do not reintroduce AgentMap markers.
 
     private static readonly Vector4 SightingColor = new(0.35f, 0.85f, 1.00f, 0.90f);
 

@@ -37,6 +37,7 @@ public sealed class ToolRegistry : IDisposable
 #else
         Register(new EnemyVisionTool(config, store, new AggroTrainer(store, config)));
 #endif
+        Register(new MinimapRadarTool(config, store));
         Register(new MobViewerTool(config, store));
 
         Register(new CharacterInfoTool());
