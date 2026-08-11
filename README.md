@@ -33,13 +33,14 @@ Settings — it then disappears from the sidebar and stops running.
 | Coffer Lines | Draws a line from you to each nearby treasure coffer in the Occult Crescent — brown for bronze, silver for silver. Each grade toggles separately. Optionally targets and opens a coffer once you walk up to it. Everything pauses in combat, and the tool does nothing outside South Horn and North Horn. |
 
 | Enemy Vision | Draws each nearby enemy's detection area on the ground — a wedge in front of enemies that only see forwards, a full circle around ones that detect in all directions — and turns it red when you are standing inside it. Includes a training mode that measures each mob's real range by watching pulls. Occult Crescent only. |
-| Mob Viewer | Browse every mob you have met: how it detects you, its measured range and cone, level, HP, hitbox, and the underlying game data. Colour-coded green / amber / red by how solid the measurements are, and any mob can be marked irrelevant to hide it. |
+| Mob Viewer | Browse every mob with confirmed detection values: how it detects you, its range and cone, level, HP, hitbox, where it lives, and the underlying game data. Any mob can be hidden. |
 
 **World overlays** (Settings → World Overlays)
 
 | Overlay | What it does |
 |---------|--------------|
-| Mob silhouettes | Outlines nearby mobs using the game's own targeting silhouette, so it traces the real model rather than a box — red for a mob that can aggro you, black for one you outlevel. Off by default; it writes to the game's render state and clears itself when switched off or unloaded. |
+| Mob silhouettes | Outlines nearby mobs that **can aggro you** in red, using the game's own targeting silhouette, so it traces the real model rather than a box. Mobs you outlevel get no outline at all — an outline means danger. Off by default; it writes to the game's render state and clears itself when switched off or unloaded. |
+| Overlay line thickness | Width of every line the plugin draws itself: detection cones and circles, coffer lines, missing-angle wedges. It does not change the silhouettes — the game's own outline pass has no width setting to change. |
 | Distance above your head | Floats the live distance to your current target over your character, refreshed every frame. The big number is the hitbox-to-hitbox gap, which is what every range in this plugin means; the raw centre-to-centre distance sits underneath. The name turns blue when the target is the mob selected in Mob Viewer, and it can be narrowed to that mob only. |
 
 > **Auto-open is off by default and is opt-in.** It targets and opens a coffer
@@ -47,23 +48,21 @@ Settings — it then disappears from the sidebar and stops running.
 > your character. Square Enix does not permit third-party automation, so enable
 > it at your own risk.
 
-> **Enemy Vision: the shape is exact, the size starts as a guess.** Whether an
-> enemy detects in a cone or in all directions is read from the game's own
-> per-enemy data. The *distance* is not published by the game anywhere — so it
-> begins as a slider and becomes a real measurement once training mode has
-> watched enough pulls. See [docs/enemy-vision.md](docs/enemy-vision.md).
+> **Enemy Vision: the shape is exact, and so is every range you are shown.**
+> Whether an enemy detects in a cone or in all directions is read from the
+> game's own per-enemy data. The *distance* is not published by the game
+> anywhere, so each one is measured by hand and confirmed before it ships. See
+> [docs/enemy-vision.md](docs/enemy-vision.md).
 
 ### Mob knowledge ships with the plugin
 
-You do not start from nothing. Detection data and sighting locations for the
-Occult Crescent are **built into the plugin**, so mobs are already mapped on
-first launch.
+You do not start from nothing. Confirmed detection values and sighting locations
+for the Occult Crescent are **built into the plugin**, so mobs are already
+mapped on first launch, and each update brings newly confirmed ones with it.
 
-Anything you measure yourself always wins — the shipped data only fills gaps.
-A mob you have never met is taken from it wholesale; a mob you have partly
-measured keeps everything you recorded and takes shipped data only for the
-angles you have no evidence in. Your own observations are of the mobs in front
-of you right now, so they outrank anything baked in at build time.
+Nothing is guessed at you. A mob whose detection range has not been pinned down
+does not appear, rather than appearing with a number that might be wrong — so
+what the overlay draws is what somebody actually walked into and measured.
 
 **Info**
 
@@ -90,11 +89,16 @@ Requires the .NET 10 SDK and a Dalamud install (the project references the
 Dalamud DLLs from `%APPDATA%\XIVLauncher\addon\Hooks\dev\`).
 
 ```
-dotnet build src/LimLoToolkit.csproj -c Debug
+dotnet build src/LimLoToolkit.csproj -c Debug     # dev build
+dotnet build src/LimLoToolkit.csproj -c Release   # public build
 ```
 
 A Debug build copies `LimLoToolkit.dll` into
 `%APPDATA%\XIVLauncher\devPlugins\LimLoToolkit\` so Dalamud picks it up.
+
+The two configurations produce **different plugins**: Release is what CI ships,
+and it has the measurement and data-collection code removed from the binary
+entirely. See [docs/build-flavours.md](docs/build-flavours.md).
 
 ## License
 

@@ -33,8 +33,63 @@ public sealed class ConfigWindow : Window, IDisposable
 
     public void Dispose() { }
 
+#if !PUBLIC_BUILD
+    /// <summary>
+    /// The Live Mode switch. Dev build only — the public build has no trainer
+    /// compiled into it and is unconditionally live, so a switch there would be
+    /// a control with one position.
+    ///
+    /// Deliberately the first thing in Settings and deliberately loud: the whole
+    /// value of it is knowing at a glance which plugin you are looking at, and a
+    /// quiet checkbox halfway down a list would leave you wondering why your
+    /// training panel had vanished.
+    /// </summary>
+    private void DrawLiveModeSwitch()
+    {
+        var live = _config.LiveMode;
+
+        var accent = live ? UiHelpers.Official : UiHelpers.Dim;
+        var origin = ImGui.GetCursorScreenPos();
+        var width  = ImGui.GetContentRegionAvail().X;
+
+        ImGui.PushStyleColor(ImGuiCol.ChildBg,
+            live ? new Vector4(0.16f, 0.11f, 0.24f, 1f) : new Vector4(0.11f, 0.12f, 0.14f, 1f));
+
+        if (ImGui.BeginChild("##limlo-livemode", new Vector2(width, 76f), true))
+        {
+            ImGui.GetWindowDrawList().AddRectFilled(
+                origin, origin + new Vector2(4f, 76f), ImGui.ColorConvertFloat4ToU32(accent));
+
+            ImGui.Indent(6f);
+
+            if (ImGui.Checkbox("LIVE MODE — see the plugin exactly as everyone else does", ref live))
+            {
+                _config.LiveMode = live;
+                _saveConfig();
+            }
+
+            UiHelpers.Muted(live
+                ? "ON. Data collection is stopped, the measurement panels are hidden, and only mobs "
+                  + "with confirmed values are listed or drawn — the public build, from your dev copy."
+                : "OFF. This is the dev build: data collection, measured values and lock controls are "
+                  + "all available. Switch this on to check what your friends actually see.");
+
+            ImGui.Unindent(6f);
+        }
+
+        ImGui.EndChild();
+        ImGui.PopStyleColor();
+
+        ImGui.Spacing();
+    }
+#endif
+
     public override void Draw()
     {
+#if !PUBLIC_BUILD
+        DrawLiveModeSwitch();
+#endif
+
         UiHelpers.SectionHeader("General");
 
         var openOnLoad = _config.OpenOnLoad;
@@ -56,12 +111,29 @@ public sealed class ConfigWindow : Window, IDisposable
             _saveConfig();
         }
         UiHelpers.HelpMarker(
-            "Uses the game's own silhouette highlight, so it traces the actual model. Red means the " +
-            "mob can aggro you; black means it cannot, because you outlevel it. The game's palette " +
-            "has no grey, so black is the closest. This writes to the game's render state rather " +
-            "than drawing an overlay, and every outline is removed again when you switch it off or " +
-            "unload the plugin. Requires the Enemy Vision tool to be enabled, and only applies in " +
-            "the Occult Crescent.");
+            "Outlines every nearby mob that CAN aggro you, in red, using the game's own silhouette " +
+            "highlight — so it traces the actual model rather than a box. Mobs you outlevel get no " +
+            "outline at all, because an outline means danger. This writes to the game's render " +
+            "state rather than drawing an overlay, and every outline is removed again when you " +
+            "switch it off or unload the plugin. Requires the Enemy Vision tool to be enabled, and " +
+            "only applies in the Occult Crescent.");
+
+        ImGui.SetNextItemWidth(200f);
+        var thickness = Math.Clamp(_config.OverlayThickness,
+                                   EnemyVisionTool.MinThickness, EnemyVisionTool.MaxThickness);
+        if (ImGui.SliderFloat("Overlay line thickness", ref thickness,
+                              EnemyVisionTool.MinThickness, EnemyVisionTool.MaxThickness, "%.1f px"))
+        {
+            _config.OverlayThickness = Math.Clamp(thickness,
+                                                  EnemyVisionTool.MinThickness, EnemyVisionTool.MaxThickness);
+            _saveConfig();
+        }
+        UiHelpers.HelpMarker(
+            "Width of every line this plugin draws itself: detection cones and circles, coffer " +
+            "lines, and the missing-angle wedges.\n\n" +
+            "It does NOT change the mob silhouettes. Those are drawn by the game's own outline " +
+            "pass and its width is not exposed anywhere — the only outline setting the game " +
+            "publishes is an on/off for character outlines, not a thickness.");
 
         var headDistance = _config.ShowTargetDistanceOverHead;
         if (ImGui.Checkbox("Show distance to target above your head", ref headDistance))

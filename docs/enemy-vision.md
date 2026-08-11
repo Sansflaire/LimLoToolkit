@@ -229,26 +229,48 @@ for its Ninja Hide logic and pins the Knowledge cap at 40.
 ## Mob silhouettes — the game's own outline
 
 Switched on in **Settings → World Overlays**. It puts the game's targeting
-silhouette around every nearby mob: **red** for one that can aggro you, **black**
-for one you outlevel. The palette is fixed by the game at eight values (None,
-Red, Green, Blue, Yellow, Orange, Magenta, Black) and contains no grey, so black
-is the closest available "harmless".
+silhouette, in **red**, around every nearby mob that can actually aggro you.
+Mobs you outlevel get **no outline at all**. An earlier version drew those in
+black; that was wrong — an outline reads as a warning whatever colour it is, so
+"harmless" is expressed by absence.
 
-**Set it with `GameObject.Highlight(ObjectHighlightColor, bool includeMount)` —
-never by writing `DrawObject.OutlineColor`.** That property is a bitfield
-occupying only the high nibble of `DrawObject.OutlineFlags` (`+0x89`), confirmed
-from the IL of its getter:
+Set it with `GameObject.Highlight(ObjectHighlightColor, bool includeMount)`,
+`VirtualFunction` index 26. It is the game's own routine and it also covers the
+mob's weapon, mount and ornament, which is exactly the reason FFXIVClientStructs'
+summary on `DrawObject.OutlineColor` points at it.
 
-```
-ldarg.0; ldfld OutlineFlags; ldc.i4.4; ldc.i4.4; call GetBitfieldValue
-```
+### The `OutlineFlags` byte, in full
 
-Assigning it therefore sets four bits, leaves the low nibble at zero, and
-renders nothing. FFXIVClientStructs' own summary on the property says to use
-`Highlight` instead, which is `VirtualFunction` index 26 — the game's real
-routine — and which additionally covers the mob's weapon, mount and ornament.
-The plugin shipped the direct write once and the outlines never appeared; see
-[BROKEN.md 011](../BROKEN.md).
+`DrawObject.OutlineColor` is a bitfield, not a field. The byte at `+0x89` packs
+two unrelated things, both confirmed from the IL of their getters:
+
+| Property | Getter IL | Bits |
+|----------|-----------|------|
+| `LoadState` | `ldfld OutlineFlags; ldc.i4.0; ldc.i4.4; call GetBitfieldValue` | 0–3 |
+| `OutlineColor` | `ldfld OutlineFlags; ldc.i4.4; ldc.i4.4; call GetBitfieldValue` | 4–7 |
+
+Worth writing down because a partial reading of this table produced a wrong
+post-mortem: the low nibble is `LoadState`, **not** an enable bit, so assigning
+`OutlineColor` directly is not missing one. See
+[BROKEN.md 011](../BROKEN.md) for the retraction.
+
+### There is no thickness parameter
+
+A sweep of the whole of FFXIVClientStructs for anything named outline or
+highlight turns up exactly two things outside `DrawObject`:
+
+- `GraphicsConfig.CharaOutline` — a `bool` at `+0x16`. A master on/off for
+  character outlines. **If it is false, nothing this plugin does can draw an
+  outline**, which is why the Enemy Vision panel reads it and says so.
+- `TargetSystem.OutlineInfo` — two `GameObject*`, mouseover and soft target.
+  That is how the game tracks which objects get its own hover outline.
+
+Neither is a width. The silhouette's thickness lives in the render pass and is
+not reachable from any published struct. The **Overlay line thickness** setting
+therefore applies only to the shapes this plugin draws itself — detection cones
+and circles, coffer lines, missing-angle wedges — and says so in its tooltip.
+
+### Restoring
 
 This writes to game render state rather than drawing an overlay, so everything
 it touches is tracked and reset to `None` when the mob leaves range, when the

@@ -15,10 +15,28 @@ namespace LimLoToolkit;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
+    /// <summary>
+    /// Config schema version. Bumped when a DEFAULT changes in a way that
+    /// should also reach people whose file already has the old value written
+    /// into it — see <see cref="Migrate"/>. A new field alone does not need a
+    /// bump; a missing property already picks up its initializer.
+    /// </summary>
+    public const int CurrentVersion = 2;
+
     public int Version { get; set; } = 1;
 
     /// <summary>Open the toolkit window automatically when the plugin loads.</summary>
     public bool OpenOnLoad { get; set; } = false;
+
+    /// <summary>
+    /// Present the plugin exactly as the public build does: no data collection,
+    /// no measured values, no lock controls, and only mobs with locked values
+    /// shown at all.
+    ///
+    /// Dev build only — the public build has no trainer compiled in, so it is
+    /// unconditionally live. See <see cref="BuildFlavor"/>.
+    /// </summary>
+    public bool LiveMode { get; set; } = false;
 
     /// <summary>Id of the tool the sidebar should select on open.</summary>
     public string LastToolId { get; set; } = string.Empty;
@@ -78,6 +96,18 @@ public sealed class Configuration : IPluginConfiguration
     /// </summary>
     public bool ShowMobOutlines { get; set; } = false;
 
+    /// <summary>
+    /// Line thickness in pixels for every shape THIS PLUGIN draws itself —
+    /// detection cones and circles, missing-angle wedges, coffer lines.
+    ///
+    /// It does NOT affect the mob silhouettes. Those are rendered by the game's
+    /// own outline pass and its width is not exposed by any published struct;
+    /// the only outline-related knob the game offers is
+    /// <c>GraphicsConfig.CharaOutline</c>, which is a bool. See
+    /// docs/enemy-vision.md.
+    /// </summary>
+    public float OverlayThickness { get; set; } = 2.5f;
+
     // --- Mob Viewer ---
 
     /// <summary>
@@ -89,10 +119,10 @@ public sealed class Configuration : IPluginConfiguration
 
     /// <summary>
     /// Show the readout only when the target is the mob selected in Mob Viewer.
-    /// Off by default: while measuring one mob the reading is wanted for
-    /// whatever is being targeted, and narrowing it is the unusual case.
+    /// On by default — the readout exists to serve the mob being studied, and
+    /// firing it at every passing target is noise.
     /// </summary>
-    public bool TargetDistanceSelectedMobOnly { get; set; } = false;
+    public bool TargetDistanceSelectedMobOnly { get; set; } = true;
 
     // --- Mob Viewer list filters ---
 
@@ -176,6 +206,28 @@ public sealed class Configuration : IPluginConfiguration
     /// the correct default; raise it to be cautious.
     /// </summary>
     public int OutlevelMargin { get; set; } = 1;
+
+    /// <summary>
+    /// Brings a config file written by an older version up to date where a
+    /// changed DEFAULT would otherwise be masked by the old value already
+    /// sitting in the file.
+    ///
+    /// Returns true if anything changed, so the caller can save.
+    /// </summary>
+    public bool Migrate()
+    {
+        if (Version >= CurrentVersion)
+            return false;
+
+        // v1 -> v2: the head readout shipped defaulting to "any target". It is
+        // meant to serve the mob being studied, so it now defaults to the
+        // selected mob and existing files are moved with it.
+        if (Version < 2)
+            TargetDistanceSelectedMobOnly = true;
+
+        Version = CurrentVersion;
+        return true;
+    }
 
     public bool IsToolEnabled(string id) =>
         !EnabledTools.TryGetValue(id, out var enabled) || enabled;

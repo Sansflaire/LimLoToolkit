@@ -22,6 +22,11 @@ namespace LimLoToolkit.Tools;
 /// Master list on the left, detail on the right. Rows are coloured by how solid
 /// the measured data is — green solved, amber partial, red nothing yet.
 ///
+/// **In Live Mode** (and therefore in the public build) the list is confirmed
+/// mobs only, every row is purple, and the measurement apparatus — lock
+/// controls, missing-angle guide, envelope table, forget button — is gone.
+/// See <see cref="BuildFlavor"/>.
+///
 /// **On "weakness".** There is no elemental-weakness data reachable from a mob.
 /// The only resistance-shaped sheet is <c>BNpcResist</c>: 256 rows of eleven
 /// unlabelled booleans, almost certainly status immunities rather than
@@ -167,7 +172,8 @@ public sealed class MobViewerTool : ITool
                     // mid-fight does not immediately record a combat position.
                     _lastInCombatAt[id] = now;
                 }
-                else if (_config.AggroTrainingEnabled)
+#if !PUBLIC_BUILD
+                else if (_config.AggroTrainingEnabled && !BuildFlavor.IsLive)
                 {
                     var settled = !_lastInCombatAt.TryGetValue(id, out var lastFight)
                                   || now - lastFight > ReturnGraceMs;
@@ -175,6 +181,7 @@ public sealed class MobViewerTool : ITool
                     if (settled && _store.AddSighting(obj.BaseId, name, territory, obj.Position))
                         _store.MarkDirty();
                 }
+#endif
 
                 var foray = ForayLevel.TryGet(obj) ?? 0;
 
@@ -353,7 +360,9 @@ public sealed class MobViewerTool : ITool
         // a mob is selected or has angles left to fill.
         DrawHeadReadout();
 
-        if (!_showMissingAngles || _selectedBaseId == 0)
+        // Missing-angle wedges are a measurement aid — they mark evidence still
+        // to be gathered, which is not a thing the live plugin does.
+        if (BuildFlavor.IsLive || !_showMissingAngles || _selectedBaseId == 0)
             return;
 
         var instances = _selectedInstances;
@@ -368,8 +377,10 @@ public sealed class MobViewerTool : ITool
         if (missing.Count == 0)
             return;
 
-        var drawList = ImGui.GetForegroundDrawList();
-        var colour   = ImGui.ColorConvertFloat4ToU32(MissingAngleColor);
+        var drawList  = ImGui.GetForegroundDrawList();
+        var colour    = ImGui.ColorConvertFloat4ToU32(MissingAngleColor);
+        var thickness = Math.Clamp(_config.OverlayThickness,
+                                   EnemyVisionTool.MinThickness, EnemyVisionTool.MaxThickness);
 
         // Far enough out to stand in comfortably, without implying a measured
         // distance — this marks a direction, not a range.
@@ -381,8 +392,8 @@ public sealed class MobViewerTool : ITool
             {
                 var (start, end) = AggroLearningStore.BinRange(bin);
 
-                DrawWedge(drawList, position, rotation, start, end, wedgeRadius, colour);
-                DrawWedge(drawList, position, rotation, -end, -start, wedgeRadius, colour);
+                DrawWedge(drawList, position, rotation, start, end, wedgeRadius, thickness, colour);
+                DrawWedge(drawList, position, rotation, -end, -start, wedgeRadius, thickness, colour);
             }
         }
     }
@@ -395,6 +406,7 @@ public sealed class MobViewerTool : ITool
         float         startDegrees,
         float         endDegrees,
         float         radius,
+        float         thickness,
         uint          colour)
     {
         const int segments = 6;
@@ -426,7 +438,7 @@ public sealed class MobViewerTool : ITool
             arcEnd     = screen;
 
             if (previous is { } prev)
-                drawList.AddLine(prev, screen, colour, 2.5f);
+                drawList.AddLine(prev, screen, colour, thickness);
 
             previous = screen;
         }
@@ -434,13 +446,23 @@ public sealed class MobViewerTool : ITool
         if (!centreOnScreen)
             return;
 
-        if (arcStart is { } s) drawList.AddLine(centreScreen, s, colour, 2.5f);
-        if (arcEnd   is { } e) drawList.AddLine(centreScreen, e, colour, 2.5f);
+        if (arcStart is { } s) drawList.AddLine(centreScreen, s, colour, thickness);
+        if (arcEnd   is { } e) drawList.AddLine(centreScreen, e, colour, thickness);
     }
 
     /// <summary>Measured profiles, plus placeholders for anything only ever seen.</summary>
     private List<AggroProfile> BuildDisplayList()
     {
+        // Live: confirmed mobs only. A profile that is merely "seen" or
+        // part-measured has nothing to state as fact, and listing it in red
+        // would be advertising the measuring apparatus this build does without.
+        if (BuildFlavor.IsLive)
+            return _store.All
+                .Where(p => p.Locked)
+                .OrderBy(p => IsIrrelevant(p) ? 1 : 0)
+                .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
         var all = new List<AggroProfile>(_store.All);
 
         foreach (var (baseId, placeholder) in _seenOnly)
@@ -482,10 +504,15 @@ public sealed class MobViewerTool : ITool
         if (profiles.Count == 0)
         {
             UiHelpers.SectionHeader("Mob Viewer");
-            UiHelpers.Muted(
-                "No mobs recorded yet. Turn on Training Mode in Enemy Vision and go pull " +
-                "something in the Occult Crescent — every mob that aggros you gets an entry " +
-                "here automatically.");
+#if PUBLIC_BUILD
+            UiHelpers.Muted("No mobs with confirmed values are available yet.");
+#else
+            UiHelpers.Muted(BuildFlavor.IsLive
+                ? "No mobs with confirmed values are available yet."
+                : "No mobs recorded yet. Turn on Training Mode in Enemy Vision and go pull " +
+                  "something in the Occult Crescent — every mob that aggros you gets an entry " +
+                  "here automatically.");
+#endif
             return;
         }
 
@@ -515,6 +542,17 @@ public sealed class MobViewerTool : ITool
     /// </summary>
     private void DrawCounters(List<AggroProfile> profiles)
     {
+        // Live: every listed mob is confirmed, so the five-way breakdown of how
+        // solid the evidence is has nothing left to distinguish.
+        if (BuildFlavor.IsLive)
+        {
+            UiHelpers.Colored(UiHelpers.Official, $"{profiles.Count} mob(s) with confirmed values");
+            ImGui.Separator();
+            ImGui.Spacing();
+            return;
+        }
+
+#if !PUBLIC_BUILD
         var official   = 0;
         var solved     = 0;
         var learning   = 0;
@@ -546,6 +584,7 @@ public sealed class MobViewerTool : ITool
 
         ImGui.Separator();
         ImGui.Spacing();
+#endif
     }
 
     /// <summary>Padlock glyph from the icon font, for a locked mob.</summary>
@@ -598,7 +637,9 @@ public sealed class MobViewerTool : ITool
                 ImGui.PushStyleColor(ImGuiCol.Text,
                     irrelevant
                         ? UiHelpers.Dim
-                        : UiHelpers.StateColor(confidence, profile.Locked));
+                        : BuildFlavor.IsLive
+                            ? UiHelpers.Official
+                            : UiHelpers.StateColor(confidence, profile.Locked));
                 var label = string.IsNullOrEmpty(profile.Name) ? $"#{profile.BaseId}" : profile.Name;
                 if (ImGui.Selectable($"{label}###limlo-mob-{profile.BaseId}", profile.BaseId == _selectedBaseId))
                     _selectedBaseId = profile.BaseId;
@@ -747,6 +788,7 @@ public sealed class MobViewerTool : ITool
     /// Samples keep accumulating underneath, so unlocking returns the mob to
     /// whatever the evidence says.
     /// </summary>
+#if !PUBLIC_BUILD
     private void DrawLockControls(AggroProfile profile)
     {
         ImGui.Spacing();
@@ -864,6 +906,8 @@ public sealed class MobViewerTool : ITool
             UiHelpers.Muted("None of these are nearby right now, so nothing is drawn.");
     }
 
+#endif
+
     private void DrawSightingMap(AggroProfile profile)
     {
         UiHelpers.SectionHeader("Where It Lives");
@@ -872,7 +916,12 @@ public sealed class MobViewerTool : ITool
 
         if (points.Count == 0)
         {
-            if (!_config.AggroTrainingEnabled)
+#if PUBLIC_BUILD
+            UiHelpers.Muted("No known locations for this mob in this zone.");
+#else
+            if (BuildFlavor.IsLive)
+                UiHelpers.Muted("No known locations for this mob in this zone.");
+            else if (!_config.AggroTrainingEnabled)
                 UiHelpers.ColoredWrapped(UiHelpers.Warn,
                     "Data collection is off, so no locations are being recorded. Turn on "
                     + "\"Collect and update mob data\" in Enemy Vision.");
@@ -880,12 +929,15 @@ public sealed class MobViewerTool : ITool
                 UiHelpers.Muted(profile.Sightings.Count > 0
                     ? "Seen only in another zone. Nothing to plot here."
                     : "Not seen anywhere yet — walk past one while it is idle and it will appear here.");
+#endif
 
             return;
         }
 
-        if (!_config.AggroTrainingEnabled)
+#if !PUBLIC_BUILD
+        if (!BuildFlavor.IsLive && !_config.AggroTrainingEnabled)
             UiHelpers.Muted("Data collection is off — this shows what was already recorded.");
+#endif
 
 
         // Fit to the spread of sightings plus the player, with a floor so a
@@ -931,9 +983,7 @@ public sealed class MobViewerTool : ITool
 
         ImGui.Dummy(new Vector2(canvas, canvas));
 
-        UiHelpers.Muted(
-            $"{points.Count} spot(s) across roughly {span:F0} yalms. "
-            + "Green is you. Spots are thinned to one per 6 yalms.");
+        UiHelpers.Muted($"{points.Count} spot(s) across roughly {span:F0} yalms. Green is you.");
     }
 
     private void DrawDetail(AggroProfile profile)
@@ -947,12 +997,18 @@ public sealed class MobViewerTool : ITool
 
         var ignored = _store.IsIgnored(profile.BaseId);
 
+        var live = BuildFlavor.IsLive;
+
         if (IsOutleveled(profile))
             UiHelpers.ColoredWrapped(UiHelpers.Dim,
                 $"Harmless — its Knowledge is {profile.ForayLevel} and yours is {_playerForayLevel}, "
-                + "so it can never aggro you. Not drawn, not trained on.");
+                + "so it can never aggro you." + (live ? " Not drawn." : " Not drawn, not trained on."));
         else if (ignored)
-            UiHelpers.ColoredWrapped(UiHelpers.Dim, "Ignored — not drawn, not trained on.");
+            UiHelpers.ColoredWrapped(UiHelpers.Dim,
+                live ? "Hidden — not drawn." : "Ignored — not drawn, not trained on.");
+        else if (live)
+            UiHelpers.ColoredWrapped(UiHelpers.Official, "Confirmed values.");
+#if !PUBLIC_BUILD
         else if (profile.Locked)
             UiHelpers.ColoredWrapped(UiHelpers.Official,
                 "OFFICIAL — values locked by you. The learner will not change them.");
@@ -961,29 +1017,42 @@ public sealed class MobViewerTool : ITool
                 UiHelpers.ConfidenceColor(confidence),
                 EnemyVisionTool.DescribeProgress(_store, profile));
 
-        DrawLockControls(profile);
-
-        DrawMissingAngleGuide(profile);
+        if (!live)
+        {
+            DrawLockControls(profile);
+            DrawMissingAngleGuide(profile);
+        }
+#endif
 
         ImGui.Spacing();
 
         var ignoreToggle = ignored;
-        if (ImGui.Checkbox($"Irrelevant — ignore this mob###limlo-ignore-detail-{profile.BaseId}", ref ignoreToggle))
+        if (ImGui.Checkbox(
+                (live ? "Hide this mob" : "Irrelevant — ignore this mob")
+                + $"###limlo-ignore-detail-{profile.BaseId}", ref ignoreToggle))
         {
             _store.SetIgnored(profile.BaseId, ignoreToggle);
             Plugin.SaveConfiguration();
         }
+#if PUBLIC_BUILD
         UiHelpers.HelpMarker(
-            "Ignored mobs get no detection shape drawn and contribute no training samples. " +
-            "Anything already measured is kept, so un-ignoring restores it.");
+            "Hidden mobs get no detection shape drawn. Everything known about them is kept.");
+#else
+        UiHelpers.HelpMarker(live
+            ? "Hidden mobs get no detection shape drawn. Everything known about them is kept."
+            : "Ignored mobs get no detection shape drawn and contribute no training samples. " +
+              "Anything already measured is kept, so un-ignoring restores it.");
+#endif
 
-        if (AggroLearningStore.ContradictsSheet(profile))
+#if !PUBLIC_BUILD
+        if (!live && AggroLearningStore.ContradictsSheet(profile))
         {
             ImGui.Spacing();
             UiHelpers.ColoredWrapped(UiHelpers.Warn,
                 $"Contradicts the game data: pulled from behind {profile.RearPulls} time(s), " +
                 "so it is treated as detecting in all directions.");
         }
+#endif
 
         ImGui.Spacing();
         UiHelpers.SectionHeader("Detection");
@@ -1012,9 +1081,11 @@ public sealed class MobViewerTool : ITool
         DrawShapeDiagram(model);
         ImGui.Spacing();
 
+#if !PUBLIC_BUILD
         // Collapsed by default — the diagram and the verdict answer the usual
         // question, and the numbers behind them are for when they do not.
-        if (ImGui.CollapsingHeader($"Detection details###limlo-detect-{profile.BaseId}")
+        if (!live
+            && ImGui.CollapsingHeader($"Detection details###limlo-detect-{profile.BaseId}")
             && ImGui.BeginTable("##limlo-mob-detect", 2, ImGuiTableFlags.SizingFixedFit))
         {
             UiHelpers.Row("Proven range", model.Range > 0f ? $"{model.Range:F1}y" : "unknown");
@@ -1041,80 +1112,88 @@ public sealed class MobViewerTool : ITool
 
             ImGui.EndTable();
         }
+#endif
 
         ImGui.Spacing();
         DrawSightingMap(profile);
 
-        ImGui.Spacing();
-        UiHelpers.SectionHeader("Measured Envelope");
-
-        UiHelpers.Muted(
-            "Furthest pull recorded in each slice around the mob's facing. 0° is dead ahead, " +
-            "180° is directly behind. This is the shape as observed — it is not forced to be a " +
-            "cone or a circle, so a mob with a close all-round core and a longer forward reach " +
-            "shows up as exactly that.");
-
-        ImGui.Spacing();
-        UiHelpers.ColoredWrapped(UiHelpers.Accent, AggroLearningStore.DescribeMeasuredShape(profile));
-        ImGui.Spacing();
-
-        AggroLearningStore.EnsureBins(profile);
-
-        if (ImGui.BeginTable("##limlo-envelope", 5, ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.RowBg))
+#if !PUBLIC_BUILD
+        // The envelope table is the raw evidence behind the verdict — the
+        // apparatus, not the answer. Live shows the answer only.
+        if (!live)
         {
-            ImGui.TableSetupColumn("Angle");
-            ImGui.TableSetupColumn("Pulled at");
-            ImGui.TableSetupColumn("Safe at");
-            ImGui.TableSetupColumn("Best guess");
-            ImGui.TableSetupColumn("Certainty");
-            ImGui.TableHeadersRow();
+            ImGui.Spacing();
+            UiHelpers.SectionHeader("Measured Envelope");
 
-            for (var bin = 0; bin < AggroLearningStore.AngleBins; bin++)
+            UiHelpers.Muted(
+                "Furthest pull recorded in each slice around the mob's facing. 0° is dead ahead, " +
+                "180° is directly behind. This is the shape as observed — it is not forced to be a " +
+                "cone or a circle, so a mob with a close all-round core and a longer forward reach " +
+                "shows up as exactly that.");
+
+            ImGui.Spacing();
+            UiHelpers.ColoredWrapped(UiHelpers.Accent, AggroLearningStore.DescribeMeasuredShape(profile));
+            ImGui.Spacing();
+
+            AggroLearningStore.EnsureBins(profile);
+
+            if (ImGui.BeginTable("##limlo-envelope", 5, ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.RowBg))
             {
-                var pulls = profile.BinSamples[bin];
-                var safe  = profile.BinMinSafeDistance[bin];
+                ImGui.TableSetupColumn("Angle");
+                ImGui.TableSetupColumn("Pulled at");
+                ImGui.TableSetupColumn("Safe at");
+                ImGui.TableSetupColumn("Best guess");
+                ImGui.TableSetupColumn("Certainty");
+                ImGui.TableHeadersRow();
 
-                ImGui.TableNextRow();
+                for (var bin = 0; bin < AggroLearningStore.AngleBins; bin++)
+                {
+                    var pulls = profile.BinSamples[bin];
+                    var safe  = profile.BinMinSafeDistance[bin];
 
-                ImGui.TableNextColumn();
-                ImGui.TextUnformatted(AggroLearningStore.BinLabel(bin));
+                    ImGui.TableNextRow();
 
-                // Lower bound: it reached us from here.
-                ImGui.TableNextColumn();
-                if (pulls > 0) UiHelpers.Colored(UiHelpers.Good, $"{profile.BinMaxDistance[bin]:F1}y");
-                else           UiHelpers.Colored(UiHelpers.Dim, "-");
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(AggroLearningStore.BinLabel(bin));
 
-                // Upper bound: we stood here unnoticed.
-                ImGui.TableNextColumn();
-                if (safe > 0f) UiHelpers.Colored(UiHelpers.Accent, $"<{safe:F1}y");
-                else           UiHelpers.Colored(UiHelpers.Dim, "-");
+                    // Lower bound: it reached us from here.
+                    ImGui.TableNextColumn();
+                    if (pulls > 0) UiHelpers.Colored(UiHelpers.Good, $"{profile.BinMaxDistance[bin]:F1}y");
+                    else           UiHelpers.Colored(UiHelpers.Dim, "-");
 
-                ImGui.TableNextColumn();
-                var guess = AggroLearningStore.RadiusAtAngle(profile, bin * AggroLearningStore.BinWidthDegrees + 1f);
-                ImGui.TextUnformatted(guess is { } g ? $"{g:F1}y" : "-");
+                    // Upper bound: we stood here unnoticed.
+                    ImGui.TableNextColumn();
+                    if (safe > 0f) UiHelpers.Colored(UiHelpers.Accent, $"<{safe:F1}y");
+                    else           UiHelpers.Colored(UiHelpers.Dim, "-");
 
-                ImGui.TableNextColumn();
-                if (AggroLearningStore.BinContradicts(profile, bin))
-                    UiHelpers.Colored(UiHelpers.Warn, "conflicting");
-                else if (AggroLearningStore.BinUncertainty(profile, bin) is { } spread)
-                    UiHelpers.Colored(spread <= 1.5f ? UiHelpers.Good : UiHelpers.Warn, $"+/- {spread / 2f:F1}y");
-                else if (pulls > 0 || safe > 0f)
-                    UiHelpers.Colored(UiHelpers.Warn, "one-sided");
-                else
-                    UiHelpers.Colored(UiHelpers.Bad, "none");
+                    ImGui.TableNextColumn();
+                    var guess = AggroLearningStore.RadiusAtAngle(profile, bin * AggroLearningStore.BinWidthDegrees + 1f);
+                    ImGui.TextUnformatted(guess is { } g ? $"{g:F1}y" : "-");
+
+                    ImGui.TableNextColumn();
+                    if (AggroLearningStore.BinContradicts(profile, bin))
+                        UiHelpers.Colored(UiHelpers.Warn, "conflicting");
+                    else if (AggroLearningStore.BinUncertainty(profile, bin) is { } spread)
+                        UiHelpers.Colored(spread <= 1.5f ? UiHelpers.Good : UiHelpers.Warn, $"+/- {spread / 2f:F1}y");
+                    else if (pulls > 0 || safe > 0f)
+                        UiHelpers.Colored(UiHelpers.Warn, "one-sided");
+                    else
+                        UiHelpers.Colored(UiHelpers.Bad, "none");
+                }
+
+                ImGui.EndTable();
             }
 
-            ImGui.EndTable();
+            UiHelpers.Muted(
+                "A slice is pinned down once it has BOTH a pull (lower bound) and a safe stand " +
+                "(upper bound) close together. \"Conflicting\" means a pull was recorded further out " +
+                "than somewhere you later stood unnoticed — usually an old bad sample.");
+
+            UiHelpers.Muted(
+                $"{AggroLearningStore.FilledBins(profile)} of {AggroLearningStore.AngleBins} slices covered " +
+                $"({AggroLearningStore.MinFilledBins} needed). Walk in from the sides and from behind to fill the gaps.");
         }
-
-        UiHelpers.Muted(
-            "A slice is pinned down once it has BOTH a pull (lower bound) and a safe stand " +
-            "(upper bound) close together. \"Conflicting\" means a pull was recorded further out " +
-            "than somewhere you later stood unnoticed — usually an old bad sample.");
-
-        UiHelpers.Muted(
-            $"{AggroLearningStore.FilledBins(profile)} of {AggroLearningStore.AngleBins} slices covered " +
-            $"({AggroLearningStore.MinFilledBins} needed). Walk in from the sides and from behind to fill the gaps.");
+#endif
 
         ImGui.Spacing();
         UiHelpers.SectionHeader("Observed");
@@ -1166,17 +1245,21 @@ public sealed class MobViewerTool : ITool
         ImGui.Spacing();
         ImGui.Separator();
 
-        if (ImGui.Button($"Forget this mob's data###limlo-forget-{profile.BaseId}"))
+#if !PUBLIC_BUILD
+        if (!live && ImGui.Button($"Forget this mob's data###limlo-forget-{profile.BaseId}"))
         {
             _store.Forget(profile.BaseId);
             Plugin.SaveConfiguration();
         }
-        UiHelpers.HelpMarker("Clears every recorded pull for this mob so it can be re-measured from scratch.");
+        if (!live)
+            UiHelpers.HelpMarker("Clears every recorded pull for this mob so it can be re-measured from scratch.");
+#endif
 
         if (_store.IgnoredCount > 0)
         {
-            ImGui.SameLine();
-            if (ImGui.Button("Un-ignore all"))
+            if (!live)
+                ImGui.SameLine();
+            if (ImGui.Button(live ? $"Unhide all ({_store.IgnoredCount})" : "Un-ignore all"))
             {
                 _store.ClearIgnored();
                 Plugin.SaveConfiguration();

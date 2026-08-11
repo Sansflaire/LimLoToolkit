@@ -36,7 +36,9 @@ public sealed class EnemyVisionTool : ITool
 
     private const float RenderDistance = 70f;
     private const int   CircleSegments = 48;
-    private const float ShapeThickness = 2.5f;
+    /// <summary>Line width for every shape this plugin draws itself. User-set.</summary>
+    public const float MinThickness = 1.0f;
+    public const float MaxThickness = 8.0f;
 
     private static readonly Vector4 SightColor  = new(0.98f, 0.75f, 0.25f, 0.85f);
     private static readonly Vector4 SoundColor  = new(0.62f, 0.55f, 0.95f, 0.85f);
@@ -78,24 +80,38 @@ public sealed class EnemyVisionTool : ITool
 
     private readonly Configuration      _config;
     private readonly AggroLearningStore _store;
-    private readonly AggroTrainer       _trainer;
     private readonly MobOutlines        _outlines = new();
+
+#if !PUBLIC_BUILD
+    private readonly AggroTrainer _trainer;
+#endif
 
     private ExcelSheet<BNpcBase>? _bnpcSheet;
 
     private List<Shape> _shapes = new();
     private bool        _inOccultCrescent;
     private int         _threateningCount;
-    private bool        _trainingWasEnabled;
     private int?        _playerForayLevel;
+
+#if !PUBLIC_BUILD
+    private bool _trainingWasEnabled;
+#endif
     private int         _outleveledCount;
 
+#if PUBLIC_BUILD
+    public EnemyVisionTool(Configuration config, AggroLearningStore store)
+    {
+        _config = config;
+        _store  = store;
+    }
+#else
     public EnemyVisionTool(Configuration config, AggroLearningStore store, AggroTrainer trainer)
     {
         _config  = config;
         _store   = store;
         _trainer = trainer;
     }
+#endif
 
     /// <summary>
     /// Outlines are written into the game's own render state, not drawn as an
@@ -126,11 +142,16 @@ public sealed class EnemyVisionTool : ITool
             var territory = (ushort)Plugin.ClientState.TerritoryType;
             _inOccultCrescent = IsOccultCrescent(territory);
 
+#if !PUBLIC_BUILD
             // Training keeps per-enemy history buffers. Drop them the moment it
-            // is switched off so nothing lingers.
-            if (_trainingWasEnabled && !_config.AggroTrainingEnabled)
+            // is switched off - or the moment Live Mode hides it - so nothing
+            // lingers and no half-observed enemy is waiting when it comes back.
+            var trainingOn = _config.AggroTrainingEnabled && !BuildFlavor.IsLive;
+
+            if (_trainingWasEnabled && !trainingOn)
                 _trainer.Reset();
-            _trainingWasEnabled = _config.AggroTrainingEnabled;
+            _trainingWasEnabled = trainingOn;
+#endif
 
             if (!_inOccultCrescent)
             {
@@ -168,7 +189,9 @@ public sealed class EnemyVisionTool : ITool
             _playerForayLevel = playerForay;
             var outleveled  = 0;
 
+#if !PUBLIC_BUILD
             var tracked = new List<TrackedEnemy>();
+#endif
 
             foreach (var obj in Plugin.ObjectTable)
             {
@@ -198,13 +221,14 @@ public sealed class EnemyVisionTool : ITool
                 var enemyForay = ForayLevel.TryGet(obj);
                 var harmless   = ForayLevel.IsHarmless(playerForay, enemyForay, _config.OutlevelMargin);
 
-                // Outlines cover every mob, including the ones skipped below —
-                // "this one cannot touch you" is exactly what the grey outline
-                // is for, so it has to be drawn before the skip.
-                if (_config.ShowMobOutlines)
+                // Outlines mark danger and nothing else. A mob the player
+                // outlevels gets none at all — and is left out of the still-
+                // present set too, so one that becomes harmless has its outline
+                // taken off on the next tick.
+                if (_config.ShowMobOutlines && !harmless)
                 {
                     outlined.Add(obj.GameObjectId);
-                    _outlines.Apply(obj, !harmless);
+                    _outlines.Apply(obj);
                 }
 
                 if (_config.IgnoreOutleveledEnemies && harmless)
@@ -217,6 +241,7 @@ public sealed class EnemyVisionTool : ITool
 
                 var ignored = _store.ShouldSkip(obj.BaseId, name);
 
+#if !PUBLIC_BUILD
                 tracked.Add(new TrackedEnemy(
                     obj,
                     obj.BaseId,
@@ -227,6 +252,7 @@ public sealed class EnemyVisionTool : ITool
                     battleNpc.MaxHp,
                     obj.HitboxRadius,
                     distance) { Ignored = ignored, CurrentHp = battleNpc.CurrentHp });
+#endif
 
                 // Ignored mobs are tracked for logging only — no shape.
                 if (ignored)
@@ -235,6 +261,13 @@ public sealed class EnemyVisionTool : ITool
                 // Measured numbers win over the slider when we have them.
                 var profile    = _store.Find(obj.BaseId);
                 var confidence = _store.ConfidenceOf(profile);
+
+                // Live: only settled values are drawn. A mob without locked
+                // numbers has nothing worth stating as fact, and an estimated
+                // shape shown without its "this is a guess" apparatus would be
+                // a claim the data cannot support.
+                if (BuildFlavor.IsLive && profile?.Locked != true)
+                    continue;
 
                 var learnedDistance = _config.UseLearnedAggroRanges ? _store.EstimatedDistance(profile) : null;
                 var learnedCone     = _config.UseLearnedAggroRanges ? _store.EstimatedConeDegrees(profile) : null;
@@ -315,8 +348,10 @@ public sealed class EnemyVisionTool : ITool
             else
                 _outlines.ClearAll();
 
-            if (_config.AggroTrainingEnabled)
+#if !PUBLIC_BUILD
+            if (_config.AggroTrainingEnabled && !BuildFlavor.IsLive)
                 _trainer.Tick(player, tracked, territory);
+#endif
         }
         catch (Exception ex)
         {
@@ -343,6 +378,7 @@ public sealed class EnemyVisionTool : ITool
 
         var drawList  = ImGui.GetForegroundDrawList();
         var highlight = _config.HighlightEnemyVisionWhenInside;
+        var thickness = Math.Clamp(_config.OverlayThickness, MinThickness, MaxThickness);
 
         foreach (var shape in shapes)
         {
@@ -363,17 +399,17 @@ public sealed class EnemyVisionTool : ITool
             if (shape.Model.Type != AggroLearningStore.UnknownType)
             {
                 if (shape.Model.Type == AggroLearningStore.RadiusType)
-                    DrawGroundCircle(drawList, shape.Position, shape.Radius, colour);
+                    DrawGroundCircle(drawList, shape.Position, shape.Radius, colour, thickness);
                 else
                     DrawGroundCone(drawList, shape.Position, shape.Radius, shape.Facing,
-                                   shape.Model.FullConeDegrees, colour);
+                                   shape.Model.FullConeDegrees, colour, thickness);
             }
             else if (AggroLearningStore.HasEvidence(shape.Profile))
-                DrawEvidenceShape(drawList, shape, colour);
+                DrawEvidenceShape(drawList, shape, colour, thickness);
             else if (shape.Omnidirectional || shape.ConeDegrees >= 360f)
-                DrawGroundCircle(drawList, shape.Position, shape.Radius, colour);
+                DrawGroundCircle(drawList, shape.Position, shape.Radius, colour, thickness);
             else
-                DrawGroundCone(drawList, shape.Position, shape.Radius, shape.Facing, shape.ConeDegrees, colour);
+                DrawGroundCone(drawList, shape.Position, shape.Radius, shape.Facing, shape.ConeDegrees, colour, thickness);
         }
     }
 
@@ -393,7 +429,7 @@ public sealed class EnemyVisionTool : ITool
     /// opposite, and the drawing has to show that or it is lying about what is
     /// known.
     /// </summary>
-    private static void DrawEvidenceShape(ImDrawListPtr drawList, Shape shape, uint colour)
+    private static void DrawEvidenceShape(ImDrawListPtr drawList, Shape shape, uint colour, float thickness)
     {
         Vector2? previous = null;
 
@@ -429,7 +465,7 @@ public sealed class EnemyVisionTool : ITool
             }
 
             if (previous is { } prev)
-                drawList.AddLine(prev, screen, colour, ShapeThickness);
+                drawList.AddLine(prev, screen, colour, thickness);
 
             previous = screen;
         }
@@ -444,7 +480,8 @@ public sealed class EnemyVisionTool : ITool
         return wrapped;
     }
 
-    private static void DrawGroundCircle(ImDrawListPtr drawList, Vector3 centre, float radius, uint colour)
+    private static void DrawGroundCircle(
+        ImDrawListPtr drawList, Vector3 centre, float radius, uint colour, float thickness)
     {
         Vector2? previous = null;
 
@@ -463,7 +500,7 @@ public sealed class EnemyVisionTool : ITool
             }
 
             if (previous is { } prev)
-                drawList.AddLine(prev, screen, colour, ShapeThickness);
+                drawList.AddLine(prev, screen, colour, thickness);
 
             previous = screen;
         }
@@ -475,7 +512,8 @@ public sealed class EnemyVisionTool : ITool
         float         radius,
         float         facing,
         float         coneDegrees,
-        uint          colour)
+        uint          colour,
+        float         thickness)
     {
         var half     = coneDegrees * 0.5f * MathF.PI / 180f;
         var segments = Math.Max(8, (int)(CircleSegments * (coneDegrees / 360f)));
@@ -503,7 +541,7 @@ public sealed class EnemyVisionTool : ITool
             arcEnd     = screen;
 
             if (previous is { } prev)
-                drawList.AddLine(prev, screen, colour, ShapeThickness);
+                drawList.AddLine(prev, screen, colour, thickness);
 
             previous = screen;
         }
@@ -512,10 +550,10 @@ public sealed class EnemyVisionTool : ITool
             return;
 
         if (arcStart is { } start)
-            drawList.AddLine(centreScreen, start, colour, ShapeThickness);
+            drawList.AddLine(centreScreen, start, colour, thickness);
 
         if (arcEnd is { } end)
-            drawList.AddLine(centreScreen, end, colour, ShapeThickness);
+            drawList.AddLine(centreScreen, end, colour, thickness);
     }
 
     // ── Panel ────────────────────────────────────────────────────────────────
@@ -554,9 +592,7 @@ public sealed class EnemyVisionTool : ITool
         // Mob silhouettes live in Settings alongside the other world overlays.
         // One switch, one home — a second copy here would be a second place to
         // look when it is not doing what was expected.
-        UiHelpers.Muted(_config.ShowMobOutlines
-            ? $"Mob silhouettes are ON ({_outlines.OutlinedCount} outlined right now). Switch them off in Settings."
-            : "Mob silhouettes are off. Switch them on in Settings, under World Overlays.");
+        DrawSilhouetteStatus();
 
         var ignoreOutleveled = _config.IgnoreOutleveledEnemies;
         if (ImGui.Checkbox("Ignore enemies you outlevel", ref ignoreOutleveled))
@@ -606,38 +642,49 @@ public sealed class EnemyVisionTool : ITool
             }
         }
 
-        var useLearned = _config.UseLearnedAggroRanges;
-        if (ImGui.Checkbox("Use measured ranges where available", ref useLearned))
+#if !PUBLIC_BUILD
+        // Everything below is measurement apparatus. The estimate sliders exist
+        // only to stand in for mobs with no data, and Live shows no such mob.
+        //
+        // Guarded twice on purpose: the runtime test makes Live Mode preview it
+        // correctly in the dev build, the #if keeps it out of the public binary
+        // altogether. Neither alone is enough.
+        if (!BuildFlavor.IsLive)
         {
-            _config.UseLearnedAggroRanges = useLearned;
-            Plugin.SaveConfiguration();
+            var useLearned = _config.UseLearnedAggroRanges;
+            if (ImGui.Checkbox("Use measured ranges where available", ref useLearned))
+            {
+                _config.UseLearnedAggroRanges = useLearned;
+                Plugin.SaveConfiguration();
+            }
+            UiHelpers.HelpMarker(
+                "Mobs with training data use their measured range and cone. " +
+                "Everything else falls back to the sliders below.");
+
+            ImGui.Spacing();
+            UiHelpers.SectionHeader("Fallback Estimates");
+            UiHelpers.Muted("Used for any mob with no measurements yet.");
+
+            var radius = Math.Clamp(_config.EnemyVisionRadius, MinRadius, MaxRadius);
+            ImGui.SetNextItemWidth(200f);
+            if (ImGui.SliderFloat("Detection range (yalms)", ref radius, MinRadius, MaxRadius, "%.1f"))
+            {
+                _config.EnemyVisionRadius = Math.Clamp(radius, MinRadius, MaxRadius);
+                Plugin.SaveConfiguration();
+            }
+
+            var cone = Math.Clamp(_config.EnemyVisionConeDegrees, MinCone, MaxCone);
+            ImGui.SetNextItemWidth(200f);
+            if (ImGui.SliderFloat("Sight cone (degrees)", ref cone, MinCone, MaxCone, "%.0f"))
+            {
+                _config.EnemyVisionConeDegrees = Math.Clamp(cone, MinCone, MaxCone);
+                Plugin.SaveConfiguration();
+            }
+
+            ImGui.Spacing();
+            DrawTrainingSection();
         }
-        UiHelpers.HelpMarker(
-            "Mobs with training data use their measured range and cone. " +
-            "Everything else falls back to the sliders below.");
-
-        ImGui.Spacing();
-        UiHelpers.SectionHeader("Fallback Estimates");
-        UiHelpers.Muted("Used for any mob with no measurements yet.");
-
-        var radius = Math.Clamp(_config.EnemyVisionRadius, MinRadius, MaxRadius);
-        ImGui.SetNextItemWidth(200f);
-        if (ImGui.SliderFloat("Detection range (yalms)", ref radius, MinRadius, MaxRadius, "%.1f"))
-        {
-            _config.EnemyVisionRadius = Math.Clamp(radius, MinRadius, MaxRadius);
-            Plugin.SaveConfiguration();
-        }
-
-        var cone = Math.Clamp(_config.EnemyVisionConeDegrees, MinCone, MaxCone);
-        ImGui.SetNextItemWidth(200f);
-        if (ImGui.SliderFloat("Sight cone (degrees)", ref cone, MinCone, MaxCone, "%.0f"))
-        {
-            _config.EnemyVisionConeDegrees = Math.Clamp(cone, MinCone, MaxCone);
-            Plugin.SaveConfiguration();
-        }
-
-        ImGui.Spacing();
-        DrawTrainingSection();
+#endif
 
         ImGui.Spacing();
         UiHelpers.SectionHeader("Nearby Enemies");
@@ -651,19 +698,30 @@ public sealed class EnemyVisionTool : ITool
         }
 
         var shapes = _shapes;
+        var live   = BuildFlavor.IsLive;
+
         if (shapes.Count == 0)
         {
-            UiHelpers.Muted(_store.IgnoredCount > 0
-                ? $"No enemies within range. ({_store.IgnoredCount} mob type(s) ignored — manage them in Mob Viewer.)"
-                : "No enemies within range.");
+            if (live)
+                UiHelpers.Muted(_store.LockedCount == 0
+                    ? "No mobs have confirmed values yet, so nothing is drawn."
+                    : "No enemies with confirmed values within range.");
+#if !PUBLIC_BUILD
+            else
+                UiHelpers.Muted(_store.IgnoredCount > 0
+                    ? $"No enemies within range. ({_store.IgnoredCount} mob type(s) ignored — manage them in Mob Viewer.)"
+                    : "No enemies within range.");
+#endif
             return;
         }
 
-        if (_store.IgnoredCount > 0)
+#if !PUBLIC_BUILD
+        if (!live && _store.IgnoredCount > 0)
         {
             UiHelpers.Muted($"{_store.IgnoredCount} mob type(s) ignored and hidden. Manage them in Mob Viewer.");
             ImGui.Spacing();
         }
+#endif
 
         if (_playerForayLevel is { } knowledge)
         {
@@ -680,15 +738,23 @@ public sealed class EnemyVisionTool : ITool
             ImGui.Spacing();
         }
 
-        DrawLegend();
+        // The legend explains the green/amber/red confidence colouring, which
+        // only exists while values are still being established. Live, every row
+        // is confirmed, and a legend for one state is noise.
+#if !PUBLIC_BUILD
+        if (!live)
+            DrawLegend();
+#endif
 
-        if (ImGui.BeginTable("##limlo-vision", 6, ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.RowBg))
+        if (ImGui.BeginTable("##limlo-vision", live ? 5 : 6,
+                             ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.RowBg))
         {
             ImGui.TableSetupColumn("Enemy");
             ImGui.TableSetupColumn("Detects");
             ImGui.TableSetupColumn("Range");
             ImGui.TableSetupColumn("Distance");
-            ImGui.TableSetupColumn("Data");
+            if (!live)
+                ImGui.TableSetupColumn("Data");
             ImGui.TableSetupColumn("");
             ImGui.TableHeadersRow();
 
@@ -702,7 +768,9 @@ public sealed class EnemyVisionTool : ITool
                 UiHelpers.Colored(
                     shape.PlayerInside
                         ? DangerColor
-                        : UiHelpers.StateColor(shape.Confidence, rowProfile?.Locked ?? false),
+                        : live
+                            ? UiHelpers.Official
+                            : UiHelpers.StateColor(shape.Confidence, rowProfile?.Locked ?? false),
                     shape.Name);
 
                 ImGui.TableNextColumn();
@@ -711,33 +779,76 @@ public sealed class EnemyVisionTool : ITool
                     : $"In front ({shape.ConeDegrees:F0}°)");
 
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(shape.Measured ? $"{shape.Gap:F1}y measured" : $"{shape.Gap:F1}y est.");
+                ImGui.TextUnformatted(live
+                    ? $"{shape.Gap:F1}y"
+                    : shape.Measured ? $"{shape.Gap:F1}y measured" : $"{shape.Gap:F1}y est.");
 
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted($"{shape.Distance:F1}y");
 
-                ImGui.TableNextColumn();
-                if (rowProfile?.Locked == true)
-                    UiHelpers.Colored(UiHelpers.Official, "Official");
-                else
-                    UiHelpers.Colored(
-                        UiHelpers.ConfidenceColor(shape.Confidence),
-                        DescribeConfidence(shape.Confidence, rowProfile?.Distances.Count ?? 0));
+#if !PUBLIC_BUILD
+                if (!live)
+                {
+                    ImGui.TableNextColumn();
+                    if (rowProfile?.Locked == true)
+                        UiHelpers.Colored(UiHelpers.Official, "Official");
+                    else
+                        UiHelpers.Colored(
+                            UiHelpers.ConfidenceColor(shape.Confidence),
+                            DescribeConfidence(shape.Confidence, rowProfile?.Distances.Count ?? 0));
+                }
+#endif
 
                 ImGui.TableNextColumn();
-                if (ImGui.SmallButton($"Ignore###limlo-ignore-{shape.BaseId}"))
+                if (ImGui.SmallButton((live ? "Hide" : "Ignore") + $"###limlo-ignore-{shape.BaseId}"))
                 {
                     _store.SetIgnored(shape.BaseId, true);
                     Plugin.SaveConfiguration();
                 }
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Stop drawing and training on this mob type. Undo it in Mob Viewer.");
+#if PUBLIC_BUILD
+                    ImGui.SetTooltip("Stop drawing this mob type. Undo it in Mob Viewer.");
+#else
+                    ImGui.SetTooltip(live
+                        ? "Stop drawing this mob type. Undo it in Mob Viewer."
+                        : "Stop drawing and training on this mob type. Undo it in Mob Viewer.");
+#endif
             }
 
             ImGui.EndTable();
         }
     }
 
+    /// <summary>
+    /// One line saying whether silhouettes are on, where the switch is, and —
+    /// the part worth having — whether the GAME is able to draw them at all. If
+    /// the client's character-outline pass is off, nothing this plugin does can
+    /// produce an outline, and the user would otherwise have no way to tell that
+    /// apart from a broken feature.
+    /// </summary>
+    private void DrawSilhouetteStatus()
+    {
+        if (!_config.ShowMobOutlines)
+        {
+            UiHelpers.Muted("Mob silhouettes are off. Switch them on in Settings, under World Overlays.");
+            return;
+        }
+
+        if (!MobOutlines.GameOutlinesEnabled)
+        {
+            UiHelpers.ColoredWrapped(UiHelpers.Bad,
+                "Mob silhouettes are on, but the game's own character-outline rendering is switched "
+                + "off, so nothing can be drawn. Turn character outlines back on in the game's "
+                + "graphics settings.");
+            return;
+        }
+
+        UiHelpers.Muted(
+            $"Mob silhouettes are ON ({_outlines.OutlinedCount} outlined right now). "
+            + "Only mobs that can aggro you are outlined. Switch them off in Settings.");
+    }
+
+#if !PUBLIC_BUILD
     private void DrawTrainingSection()
     {
         UiHelpers.SectionHeader("Training Mode");
@@ -848,6 +959,9 @@ public sealed class EnemyVisionTool : ITool
             "now say so explicitly instead of passing in silence.");
     }
 
+#endif
+
+#if !PUBLIC_BUILD
     private static void DrawLegend()
     {
         UiHelpers.Colored(UiHelpers.Official, "Purple");
@@ -883,4 +997,5 @@ public sealed class EnemyVisionTool : ITool
             ? "No data yet"
             : $"{DescribeConfidence(confidence, profile.Distances.Count)} — {AggroLearningStore.WhatIsMissing(profile)}";
     }
+#endif
 }

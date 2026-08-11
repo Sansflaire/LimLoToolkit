@@ -39,6 +39,13 @@ public sealed class Plugin : IDalamudPlugin
     public static string VersionString =>
         typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "unknown";
 
+    /// <summary>
+    /// The live configuration, for the few places that need it without having
+    /// been handed one — <see cref="BuildFlavor.IsLive"/> in particular, which
+    /// is consulted from static UI helpers.
+    /// </summary>
+    public static Configuration? Config => _instance?._config;
+
     private readonly Configuration _config;
     private readonly ToolRegistry  _tools;
     private readonly WindowSystem  _windows = new("LimLoToolkit");
@@ -50,7 +57,17 @@ public sealed class Plugin : IDalamudPlugin
         _instance = this;
 
         _config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
-        _tools  = new ToolRegistry(_config);
+
+        // Must run before anything reads a setting, and must be saved straight
+        // away — otherwise a migration re-runs on every launch and a user who
+        // deliberately changed the value back has it taken off them each time.
+        if (_config.Migrate())
+        {
+            PluginInterface.SavePluginConfig(_config);
+            Log.Information($"Config migrated to v{Configuration.CurrentVersion}.");
+        }
+
+        _tools = new ToolRegistry(_config);
 
         _configWindow = new ConfigWindow(_config, _tools, SaveConfig);
         _mainWindow   = new MainWindow(_config, _tools, SaveConfig, OpenConfigUi);
@@ -75,7 +92,9 @@ public sealed class Plugin : IDalamudPlugin
         if (_config.OpenOnLoad)
             _mainWindow.IsOpen = true;
 
-        Log.Information($"{DisplayName} v{VersionString} loaded with {_tools.All.Count} tool(s).");
+        Log.Information(
+            $"{DisplayName} v{VersionString} ({BuildFlavor.Name} build) loaded with {_tools.All.Count} tool(s)."
+            + (BuildFlavor.HasTraining && _config.LiveMode ? " Live Mode is ON." : string.Empty));
     }
 
     public void Dispose()

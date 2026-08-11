@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using Dalamud.Game.ClientState.Objects.Types;
 
 using FFXIVClientStructs.FFXIV.Client.Game.Object;
+using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
 
 namespace LimLoToolkit.Tools;
 
@@ -12,20 +13,23 @@ namespace LimLoToolkit.Tools;
 /// for targeting, so it traces the actual model rather than approximating it
 /// with a box.
 ///
-/// **Mechanism.** <c>GameObject.Highlight(ObjectHighlightColor, includeMount)</c>,
-/// virtual function 26 on the object's vtable. The palette is fixed by the game
-/// and offers exactly eight values: None, Red, Green, Blue, Yellow, Orange,
-/// Magenta, Black. There is no grey, so Black is used for "won't aggro" — it
-/// reads as a dark rim against most terrain and is unmistakably not the red one.
+/// **Only mobs that can actually aggro are outlined.** Anything the player
+/// outlevels gets no outline at all rather than a second colour — the point of
+/// the overlay is "these can touch you", and a harmless mob wearing a rim reads
+/// as a warning no matter which colour it is.
 ///
-/// **Why not write <c>DrawObject-&gt;OutlineColor</c> directly.** That property is
-/// a bitfield occupying only the HIGH nibble of <c>DrawObject.OutlineFlags</c>
-/// (confirmed from the IL of its getter: <c>ldfld OutlineFlags; ldc.i4.4;
-/// ldc.i4.4; call GetBitfield</c>). Setting it leaves the low nibble untouched
-/// and nothing renders. ClientStructs' own summary on the property says to use
-/// <c>Highlight</c> instead, which also covers the mob's weapon and mount. This
-/// plugin did write the property directly at first and the outlines never
-/// appeared — see BROKEN.md.
+/// **Mechanism.** <c>GameObject.Highlight(ObjectHighlightColor, includeMount)</c>,
+/// virtual function 26 on the object's vtable. It is the game's own routine, and
+/// it also covers the mob's weapon, mount and ornament — which is exactly why
+/// FFXIVClientStructs' summary on <c>DrawObject.OutlineColor</c> tells you to
+/// call it rather than assign the property. The palette is fixed by the game at
+/// eight values: None, Red, Green, Blue, Yellow, Orange, Magenta, Black.
+///
+/// **There is no thickness parameter.** The outline width belongs to the game's
+/// render pass. The only outline-related setting in any published struct is
+/// <c>GraphicsConfig.CharaOutline</c>, a bool at <c>+0x16</c> — a master on/off
+/// for character outlines, not a width. If it is false, nothing here can draw.
+/// See docs/enemy-vision.md.
 ///
 /// **Restoring.** This writes to game state, so anything it touches must be put
 /// back. Every outlined object is tracked and reset to None when it leaves
@@ -41,13 +45,15 @@ public sealed class MobOutlines
     public int OutlinedCount => _outlined.Count;
 
     /// <summary>
-    /// Applies an outline, remembering the object so it can be cleared.
+    /// Outlines a mob in red, remembering it so the outline can be taken off
+    /// again. Call only for mobs that can actually aggro — this no longer takes
+    /// a colour, because a harmless mob is meant to have no outline at all.
     ///
     /// Re-asserted every tick rather than cached: the game drives this same
     /// field for its own target highlight, so a cached "already red" would go
     /// stale the moment the player targets and untargets the mob.
     /// </summary>
-    public unsafe void Apply(IGameObject obj, bool canAggro)
+    public unsafe void Apply(IGameObject obj)
     {
         try
         {
@@ -55,15 +61,36 @@ public sealed class MobOutlines
             if (native == null || native->DrawObject == null)
                 return;
 
-            native->Highlight(
-                canAggro ? ObjectHighlightColor.Red : ObjectHighlightColor.Black,
-                includeMount: true);
+            native->Highlight(ObjectHighlightColor.Red, includeMount: true);
 
             _outlined.Add(obj.GameObjectId);
         }
         catch (Exception ex)
         {
             Plugin.Log.Error(ex, "Failed to apply a mob outline.");
+        }
+    }
+
+    /// <summary>
+    /// Whether the game's own character-outline render pass is switched on. If
+    /// this is false, nothing this class does can produce a visible outline —
+    /// which is worth saying out loud in the UI rather than leaving the user to
+    /// conclude the feature is broken.
+    /// </summary>
+    public static unsafe bool GameOutlinesEnabled
+    {
+        get
+        {
+            try
+            {
+                var config = GraphicsConfig.Instance();
+                return config == null || config->CharaOutline;
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.Error(ex, "Failed to read GraphicsConfig.CharaOutline.");
+                return true;
+            }
         }
     }
 

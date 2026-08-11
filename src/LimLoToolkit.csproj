@@ -13,12 +13,36 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <AssemblyName>LimLoToolkit</AssemblyName>
     <RootNamespace>LimLoToolkit</RootNamespace>
-    <Version>0.18.0.0</Version>
+    <Version>0.19.0.0</Version>
   </PropertyGroup>
 
   <PropertyGroup>
     <DalamudLibPath>$(APPDATA)\XIVLauncher\addon\Hooks\dev\</DalamudLibPath>
   </PropertyGroup>
+
+  <!--
+    TWO FLAVOURS, SELECTED BY CONFIGURATION.
+
+      Debug   = the DEV build. Everything, including data collection and the
+                Live Mode switch that previews the public build.
+      Release = the PUBLIC build. CI builds this, so every shipped release is
+                automatically the stripped one. The training code is not
+                merely hidden: the two files below are dropped from
+                compilation and every call site is behind #if, so the shipped
+                DLL contains no learning code and none of its UI strings.
+
+    Do not "simplify" this by making the flavour a runtime flag. The whole
+    point is that the public artifact cannot contain the trainer. See
+    docs/build-flavours.md.
+  -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DefineConstants>$(DefineConstants);PUBLIC_BUILD</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(Configuration)' == 'Release'">
+    <Compile Remove="Tools\AggroTrainer.cs" />
+    <Compile Remove="Tools\AggroLearningRecording.cs" />
+  </ItemGroup>
 
   <!--
     STANDALONE BY DESIGN. Every reference below ships with Dalamud itself.

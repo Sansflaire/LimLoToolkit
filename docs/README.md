@@ -7,7 +7,8 @@ a doc is created.
 |----------|--------|
 | [architecture.md](architecture.md) | How the toolkit shell, tool registry, and windows fit together |
 | [occult-crescent.md](occult-crescent.md) | Verified game data behind the Coffer Lines tool: territory IDs, coffer SGB model ids, gating rules, and how each was checked |
-| [enemy-vision.md](enemy-vision.md) | Why enemy detection *shape* is real game data but *range* is not, what every other plugin does about it, and how to make ours accurate |
+| [enemy-vision.md](enemy-vision.md) | Why enemy detection *shape* is real game data but *range* is not, what every other plugin does about it, and how to make ours accurate. Also the mob-silhouette mechanism and why it has no thickness setting |
+| [build-flavours.md](build-flavours.md) | The public/dev build split: what is stripped from the shipped DLL, how `#if PUBLIC_BUILD` and `BuildFlavor.IsLive` differ, Live Mode, and what "confirmed" means |
 
 Project-level docs that live outside this folder:
 
