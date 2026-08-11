@@ -6,6 +6,7 @@ using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.Types;
+using Dalamud.Interface;
 
 using Lumina.Excel;
 using Lumina.Excel.Sheets;
@@ -42,12 +43,6 @@ public sealed class MobViewerTool : ITool
 
     private uint   _selectedBaseId;
     private string _search = string.Empty;
-    private bool   _onlyNearby;
-    /// <summary>
-    /// Off by default: irrelevant mobs are more useful greyed out at the bottom
-    /// of the list than missing entirely.
-    /// </summary>
-    private bool _hideIgnored;
 
     private int?    _playerForayLevel;
     private ushort  _territory;
@@ -356,11 +351,70 @@ public sealed class MobViewerTool : ITool
 
         if (ImGui.BeginChild("##limlo-mob-detail", Vector2.Zero, true))
         {
+            DrawCounters(profiles);
+
             var selected = profiles.FirstOrDefault(p => p.BaseId == _selectedBaseId) ?? profiles[0];
             DrawDetail(selected);
         }
 
         ImGui.EndChild();
+    }
+
+    /// <summary>
+    /// One-line tally across the top of the detail pane.
+    ///
+    /// Deliberately never wraps: five short counts reading left to right are
+    /// scannable, and the same five broken across two lines are not. If the
+    /// panel is too narrow the row runs off the edge, which is the better
+    /// failure — the leading counts stay in place and the window can be
+    /// widened.
+    /// </summary>
+    private void DrawCounters(List<AggroProfile> profiles)
+    {
+        var official   = 0;
+        var solved     = 0;
+        var learning   = 0;
+        var empty      = 0;
+        var irrelevant = 0;
+
+        foreach (var profile in profiles)
+        {
+            if (IsIrrelevant(profile)) { irrelevant++; continue; }
+            if (profile.Locked)        { official++;   continue; }
+
+            switch (_store.ConfidenceOf(profile))
+            {
+                case AggroConfidence.Confident: solved++;   break;
+                case AggroConfidence.Learning:  learning++; break;
+                default:                        empty++;    break;
+            }
+        }
+
+        UiHelpers.Colored(UiHelpers.Official, $"{official} official");
+        ImGui.SameLine();
+        UiHelpers.Colored(UiHelpers.Good, $"{solved} solved");
+        ImGui.SameLine();
+        UiHelpers.Colored(UiHelpers.Warn, $"{learning} partial");
+        ImGui.SameLine();
+        UiHelpers.Colored(UiHelpers.Bad, $"{empty} empty");
+        ImGui.SameLine();
+        UiHelpers.Colored(UiHelpers.Dim, $"{irrelevant} skipped");
+
+        ImGui.Separator();
+        ImGui.Spacing();
+    }
+
+    /// <summary>Padlock glyph from the icon font, for a locked mob.</summary>
+    private static void DrawLockIcon()
+    {
+        using (Plugin.PluginInterface.UiBuilder.IconFontHandle.Push())
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, UiHelpers.Official);
+            ImGui.TextUnformatted(((char)FontAwesomeIcon.Lock).ToString());
+            ImGui.PopStyleColor();
+        }
+
+        ImGui.SameLine(0f, 4f);
     }
 
     private void DrawMaster(List<AggroProfile> profiles)
@@ -372,66 +426,16 @@ public sealed class MobViewerTool : ITool
             if (ImGui.InputTextWithHint("##limlo-mob-search", "Search mobs...", ref search, 64))
                 _search = search;
 
-            var onlyNearby = _onlyNearby;
-            if (ImGui.Checkbox("Nearby only", ref onlyNearby))
-                _onlyNearby = onlyNearby;
-
-            var hideIgnored = _hideIgnored;
-            if (ImGui.Checkbox("Hide irrelevant", ref hideIgnored))
-                _hideIgnored = hideIgnored;
-
-            ImGui.Separator();
-
-            var solved          = 0;
-            var learning        = 0;
-            var empty           = 0;
-            var irrelevantCount = 0;
-
-            foreach (var profile in profiles)
-            {
-                // Counts describe the mobs that actually matter; irrelevant ones
-                // are tallied separately rather than inflating "empty".
-                if (IsIrrelevant(profile))
-                {
-                    irrelevantCount++;
-                    continue;
-                }
-
-                // Official is its own tally — counting locked mobs as "solved"
-                // would overstate how much the learner has actually worked out.
-                if (profile.Locked)
-                    continue;
-
-                switch (_store.ConfidenceOf(profile))
-                {
-                    case AggroConfidence.Confident: solved++;   break;
-                    case AggroConfidence.Learning:  learning++; break;
-                    default:                        empty++;    break;
-                }
-            }
-
-            UiHelpers.Colored(UiHelpers.Good, $"{solved} solved");
-            ImGui.SameLine();
-            UiHelpers.Colored(UiHelpers.Warn, $"{learning} partial");
-            ImGui.SameLine();
-            UiHelpers.Colored(UiHelpers.Bad, $"{empty} empty");
-
-            if (_store.LockedCount > 0)
-                UiHelpers.Colored(UiHelpers.Official, $"{_store.LockedCount} official");
-
-            if (irrelevantCount > 0)
-                UiHelpers.Muted($"{irrelevantCount} irrelevant (ignored or outlevelled)");
-
             ImGui.Separator();
 
             foreach (var profile in profiles)
             {
                 var irrelevant = IsIrrelevant(profile);
 
-                if (_hideIgnored && irrelevant)
+                if (_config.MobViewerHideIrrelevant && irrelevant)
                     continue;
 
-                if (_onlyNearby && !_nearby.Contains(profile.BaseId))
+                if (_config.MobViewerNearbyOnly && !_nearby.Contains(profile.BaseId))
                     continue;
 
                 if (!string.IsNullOrWhiteSpace(_search)
@@ -442,6 +446,11 @@ public sealed class MobViewerTool : ITool
 
                 // Irrelevant mobs stay visible but recede to grey — they are not
                 // part of the green/amber/red story any more.
+                // Padlock sits to the LEFT of the name, so locked mobs are
+                // identifiable by shape as well as by colour.
+                if (profile.Locked)
+                    DrawLockIcon();
+
                 ImGui.PushStyleColor(ImGuiCol.Text,
                     irrelevant
                         ? UiHelpers.Dim

@@ -69,6 +69,14 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>Recolour a shape when the player is standing inside it.</summary>
     public bool HighlightEnemyVisionWhenInside { get; set; } = true;
 
+    // --- Mob Viewer list filters ---
+
+    /// <summary>Show only mob types currently in the object table.</summary>
+    public bool MobViewerNearbyOnly { get; set; } = true;
+
+    /// <summary>Hide ignored and outlevelled mobs from the list.</summary>
+    public bool MobViewerHideIrrelevant { get; set; } = true;
+
     // --- Aggro training ---
 
     /// <summary>

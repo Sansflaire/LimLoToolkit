@@ -45,6 +45,27 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         ImGui.Spacing();
+        UiHelpers.SectionHeader("Mob Viewer");
+        UiHelpers.Muted("What the mob list shows. Both on keeps it to what is in front of you.");
+        ImGui.Spacing();
+
+        var nearbyOnly = _config.MobViewerNearbyOnly;
+        if (ImGui.Checkbox("Nearby only", ref nearbyOnly))
+        {
+            _config.MobViewerNearbyOnly = nearbyOnly;
+            _saveConfig();
+        }
+        UiHelpers.HelpMarker("List only mob types currently loaded around you.");
+
+        var hideIrrelevant = _config.MobViewerHideIrrelevant;
+        if (ImGui.Checkbox("Hide irrelevant", ref hideIrrelevant))
+        {
+            _config.MobViewerHideIrrelevant = hideIrrelevant;
+            _saveConfig();
+        }
+        UiHelpers.HelpMarker("Hide mobs you have ignored, and ones too far below your Knowledge level to aggro.");
+
+        ImGui.Spacing();
         UiHelpers.SectionHeader("Tools");
         UiHelpers.Muted("Switch a tool off to hide it from the sidebar and stop it from running.");
         ImGui.Spacing();
