@@ -98,6 +98,29 @@ public sealed class AggroProfile
     public int    ForayLevel           { get; set; }
 
     /// <summary>
+    /// Confirmed by hand. A locked mob's values are treated as correct: the
+    /// classifier is bypassed, it counts as solved, and no amount of new
+    /// sampling moves the drawn shape.
+    ///
+    /// Samples keep accumulating underneath so nothing is lost, and unlocking
+    /// returns it to whatever the evidence says.
+    /// </summary>
+    public bool  Locked          { get; set; }
+
+    /// <summary>Detection distance, hitring to hitring.</summary>
+    public float LockedRange     { get; set; }
+
+    /// <summary>Full arc width in degrees. Only meaningful for a sight mob.</summary>
+    public float LockedArcDegrees { get; set; } = 90f;
+
+    /// <summary>
+    /// Sight (cone) or sound (all directions), stored explicitly rather than
+    /// inferred from the arc — it is a separate fact about the mob and the user
+    /// may be certain of it while still tuning the numbers.
+    /// </summary>
+    public bool LockedIsSound { get; set; }
+
+    /// <summary>
     /// Where this mob type has been seen, thinned to one point per grid cell so
     /// the list stays small however long you play. Enough to show the ground it
     /// occupies rather than every individual spawn.
@@ -254,6 +277,27 @@ public sealed class AggroLearningStore
     /// covering <paramref name="angleDegrees"/>. Proves the reach there is less
     /// than that.
     /// </summary>
+    /// <summary>
+    /// Locks a mob to values the user has confirmed, or releases it back to the
+    /// evidence. Recorded samples are left untouched either way, so unlocking
+    /// restores whatever the measurements say.
+    /// </summary>
+    public void SetLock(uint baseId, bool locked, float range, float arcDegrees, bool isSound)
+    {
+        if (!_byBaseId.TryGetValue(baseId, out var profile))
+            return;
+
+        profile.Locked           = locked;
+        profile.LockedRange      = MathF.Max(0f, range);
+        profile.LockedArcDegrees = Math.Clamp(arcDegrees, 5f, 360f);
+        profile.LockedIsSound    = isSound;
+
+        Save();
+    }
+
+    /// <summary>Mobs the user has confirmed by hand.</summary>
+    public int LockedCount => _byBaseId.Values.Count(p => p.Locked);
+
     /// <summary>Returns true only when this tightened the known bound.</summary>
     public bool AddSafeObservation(uint baseId, string name, bool sheetOmnidirectional,
                                    ushort territoryId, float hitboxRadius,
@@ -973,7 +1017,14 @@ public sealed class AggroLearningStore
     /// <summary>Green only when both halves are settled.</summary>
     public AggroConfidence ConfidenceOf(AggroProfile? profile)
     {
-        if (profile == null || profile.Distances.Count == 0)
+        if (profile == null)
+            return AggroConfidence.None;
+
+        // Locked means confirmed, whatever the sample counts happen to be.
+        if (profile.Locked)
+            return AggroConfidence.Confident;
+
+        if (profile.Distances.Count == 0)
             return AggroConfidence.None;
 
         return RangeSolved(profile) && ShapeSolved(profile)
@@ -991,6 +1042,9 @@ public sealed class AggroLearningStore
     /// </summary>
     public static string WhatIsMissing(AggroProfile profile)
     {
+        if (profile.Locked)
+            return "locked";
+
         var parts = new List<string>();
 
         if (!RangeSolved(profile))
@@ -1132,6 +1186,24 @@ public sealed class AggroLearningStore
     public static DetectionModel Classify(AggroProfile profile)
     {
         EnsureBins(profile);
+
+        // A hand-confirmed value outranks anything inferred. The user has seen
+        // this mob's behaviour directly; the classifier is working from samples
+        // about it.
+        if (profile.Locked)
+        {
+            var lockedArc = profile.LockedIsSound
+                ? 360f
+                : Math.Clamp(profile.LockedArcDegrees, 5f, 360f);
+
+            return new DetectionModel(
+                profile.LockedIsSound ? DetectionType.Radius : DetectionType.Cone,
+                MathF.Max(0f, profile.LockedRange),
+                lockedArc * 0.5f,
+                profile.LockedIsSound
+                    ? $"locked by you — sound, {profile.LockedRange:F1}y all round"
+                    : $"locked by you — sight, {profile.LockedRange:F1}y over {lockedArc:F0}°");
+        }
 
         var range = 0f;
         for (var i = 0; i < AngleBins; i++)
@@ -1417,7 +1489,8 @@ public sealed class AggroLearningStore
 
         var missing = new List<int>();
 
-        if (ShapeSolved(profile))
+        // Nothing is outstanding on a mob whose values are confirmed.
+        if (profile.Locked || ShapeSolved(profile))
             return missing;
 
         var widestPull = WidestPullAngle(profile);

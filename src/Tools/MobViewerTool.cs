@@ -384,6 +384,9 @@ public sealed class MobViewerTool : ITool
             ImGui.SameLine();
             UiHelpers.Colored(UiHelpers.Bad, $"{empty} empty");
 
+            if (_store.LockedCount > 0)
+                UiHelpers.Muted($"{_store.LockedCount} locked by you");
+
             if (irrelevantCount > 0)
                 UiHelpers.Muted($"{irrelevantCount} irrelevant (ignored or outlevelled)");
 
@@ -414,6 +417,17 @@ public sealed class MobViewerTool : ITool
                     _selectedBaseId = profile.BaseId;
                 ImGui.PopStyleColor();
 
+                // Locked mobs are green like solved ones, so mark them apart —
+                // "confirmed by hand" and "worked out from samples" are
+                // different kinds of certainty.
+                if (profile.Locked)
+                {
+                    ImGui.SameLine();
+                    UiHelpers.Colored(UiHelpers.Good, "L");
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip("Locked — values confirmed by you");
+                }
+
                 if (_nearby.Contains(profile.BaseId))
                 {
                     ImGui.SameLine();
@@ -433,6 +447,104 @@ public sealed class MobViewerTool : ITool
     /// reads the same for a mob confined to one camp and one spread across the
     /// zone — the axis labels carry the true extent.
     /// </summary>
+    /// <summary>
+    /// Lets the user pin a mob's values by hand.
+    ///
+    /// The learner is deliberately conservative and self-correcting, which
+    /// means it can walk a value back — a closer safe stand deletes a longer
+    /// pull, because newer evidence is meant to win. That is right when the old
+    /// reading was noise and wrong when the user simply knows they have been
+    /// caught from further away. A lock settles it: their value stands and no
+    /// amount of sampling moves it.
+    ///
+    /// Samples keep accumulating underneath, so unlocking returns the mob to
+    /// whatever the evidence says.
+    /// </summary>
+    private void DrawLockControls(AggroProfile profile)
+    {
+        ImGui.Spacing();
+
+        var locked = profile.Locked;
+        if (ImGui.Checkbox($"Lock these values###limlo-lock-{profile.BaseId}", ref locked))
+        {
+            // Seed the fields from the current best guess so locking is one
+            // click when the measurement already looks right.
+            if (locked && profile.LockedRange <= 0f)
+            {
+                var current = AggroLearningStore.Classify(profile);
+                profile.LockedRange      = current.Range > 0f ? current.Range : _config.EnemyVisionRadius;
+                profile.LockedArcDegrees = current.Type == DetectionType.Radius
+                    ? 90f
+                    : Math.Clamp(current.FullConeDegrees, 5f, 360f);
+                profile.LockedIsSound    = current.Type == DetectionType.Radius;
+            }
+
+            _store.SetLock(profile.BaseId, locked,
+                profile.LockedRange, profile.LockedArcDegrees, profile.LockedIsSound);
+        }
+        UiHelpers.HelpMarker(
+            "Treat these numbers as correct and stop the learner changing them. Use it when you know " +
+            "you get caught from further out than the measurements say. Recorded samples are kept, so " +
+            "unlocking hands the mob back to the evidence.");
+
+        if (!profile.Locked)
+            return;
+
+        ImGui.Indent();
+
+        var isSound = profile.LockedIsSound;
+        if (ImGui.RadioButton("Sight (cone in front)", !isSound))
+        {
+            _store.SetLock(profile.BaseId, true, profile.LockedRange, profile.LockedArcDegrees, false);
+        }
+        ImGui.SameLine();
+        if (ImGui.RadioButton("Sound (all directions)", isSound))
+        {
+            _store.SetLock(profile.BaseId, true, profile.LockedRange, profile.LockedArcDegrees, true);
+        }
+
+        var range = profile.LockedRange;
+        ImGui.SetNextItemWidth(160f);
+        if (ImGui.DragFloat($"Detection range (yalms)###limlo-lockrange-{profile.BaseId}",
+                            ref range, 0.1f, 0f, EnemyVisionTool.MaxRadius, "%.1f"))
+        {
+            _store.SetLock(profile.BaseId, true, range, profile.LockedArcDegrees, profile.LockedIsSound);
+        }
+
+        if (!profile.LockedIsSound)
+        {
+            var arc = profile.LockedArcDegrees;
+            ImGui.SetNextItemWidth(160f);
+            if (ImGui.DragFloat($"Cone angle (degrees)###limlo-lockarc-{profile.BaseId}",
+                                ref arc, 1f, 5f, 360f, "%.0f"))
+            {
+                _store.SetLock(profile.BaseId, true, profile.LockedRange, arc, profile.LockedIsSound);
+            }
+            UiHelpers.HelpMarker("Total width of the wedge, centred on the mob's facing.");
+        }
+
+        if (ImGui.SmallButton($"Set from measurement###limlo-lockmeasure-{profile.BaseId}"))
+        {
+            // Temporarily read the evidence-based answer, ignoring the lock.
+            var wasLocked = profile.Locked;
+            profile.Locked = false;
+            var measured = AggroLearningStore.Classify(profile);
+            profile.Locked = wasLocked;
+
+            if (measured.Type != DetectionType.Unknown)
+            {
+                _store.SetLock(profile.BaseId, true,
+                    measured.Range,
+                    measured.Type == DetectionType.Radius ? profile.LockedArcDegrees : measured.FullConeDegrees,
+                    measured.Type == DetectionType.Radius);
+            }
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Fill these fields from what the samples currently say, then keep editing by hand.");
+
+        ImGui.Unindent();
+    }
+
     /// <summary>
     /// Lists the approaches still needed and offers to show them in the world.
     /// </summary>
@@ -547,6 +659,8 @@ public sealed class MobViewerTool : ITool
             UiHelpers.ColoredWrapped(
                 UiHelpers.ConfidenceColor(confidence),
                 EnemyVisionTool.DescribeProgress(_store, profile));
+
+        DrawLockControls(profile);
 
         DrawMissingAngleGuide(profile);
 
