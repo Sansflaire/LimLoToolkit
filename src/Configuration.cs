@@ -69,6 +69,15 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>Recolour a shape when the player is standing inside it.</summary>
     public bool HighlightEnemyVisionWhenInside { get; set; } = true;
 
+    /// <summary>
+    /// Outline mobs in the world with the game's own silhouette highlight —
+    /// red for anything that can aggro, black for anything that cannot.
+    ///
+    /// Off by default. It writes to game render state rather than drawing an
+    /// overlay, so it stays opt-in.
+    /// </summary>
+    public bool ShowMobOutlines { get; set; } = false;
+
     // --- Mob Viewer list filters ---
 
     /// <summary>Show only mob types currently in the object table.</summary>

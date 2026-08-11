@@ -79,6 +79,7 @@ public sealed class EnemyVisionTool : ITool
     private readonly Configuration      _config;
     private readonly AggroLearningStore _store;
     private readonly AggroTrainer       _trainer;
+    private readonly MobOutlines        _outlines = new();
 
     private ExcelSheet<BNpcBase>? _bnpcSheet;
 
@@ -94,6 +95,19 @@ public sealed class EnemyVisionTool : ITool
         _config  = config;
         _store   = store;
         _trainer = trainer;
+    }
+
+    /// <summary>
+    /// Outlines are written into the game's own render state, not drawn as an
+    /// overlay, so they survive the plugin going away. Everything we touched
+    /// has to be put back or the user is left with permanently outlined mobs
+    /// and no way to clear them short of a zone change.
+    /// </summary>
+    public void Dispose()
+    {
+        var had = _outlines.OutlinedCount;
+        _outlines.ClearAll();
+        Plugin.Log.Information($"[EnemyVision] Dispose ran; cleared {had} outline(s).");
     }
 
     private static bool IsOccultCrescent(ushort territory) =>
@@ -145,6 +159,7 @@ public sealed class EnemyVisionTool : ITool
             // player cannot aggro at all, so those are skipped entirely — both
             // to cut clutter and to keep them from feeding the trainer endless
             // meaningless "it did not notice me" evidence.
+            var outlined    = new HashSet<ulong>();
             var playerForay = ForayLevel.TryGet(player);
 
             if (playerForay != _playerForayLevel)
@@ -181,9 +196,18 @@ public sealed class EnemyVisionTool : ITool
                 // rather than vanishing — silence here is indistinguishable
                 // from the trainer being broken.
                 var enemyForay = ForayLevel.TryGet(obj);
+                var harmless   = ForayLevel.IsHarmless(playerForay, enemyForay, _config.OutlevelMargin);
 
-                if (_config.IgnoreOutleveledEnemies
-                    && ForayLevel.IsHarmless(playerForay, enemyForay, _config.OutlevelMargin))
+                // Outlines cover every mob, including the ones skipped below —
+                // "this one cannot touch you" is exactly what the grey outline
+                // is for, so it has to be drawn before the skip.
+                if (_config.ShowMobOutlines)
+                {
+                    outlined.Add(obj.GameObjectId);
+                    _outlines.Apply(obj, !harmless);
+                }
+
+                if (_config.IgnoreOutleveledEnemies && harmless)
                 {
                     // Skipped completely: no shape, no tracking, no samples.
                     // Its non-detections say nothing about its detection shape.
@@ -283,6 +307,13 @@ public sealed class EnemyVisionTool : ITool
             shapes.Sort((a, b) => a.Distance.CompareTo(b.Distance));
 
             _outleveledCount = outleveled;
+
+            // Put back anything that wandered out of range, and drop the lot
+            // the moment the feature is switched off.
+            if (_config.ShowMobOutlines)
+                _outlines.ClearMissing(outlined);
+            else
+                _outlines.ClearAll();
 
             if (_config.AggroTrainingEnabled)
                 _trainer.Tick(player, tracked, territory);
@@ -519,6 +550,21 @@ public sealed class EnemyVisionTool : ITool
             _config.HighlightEnemyVisionWhenInside = highlight;
             Plugin.SaveConfiguration();
         }
+
+        var outlines = _config.ShowMobOutlines;
+        if (ImGui.Checkbox("Outline mobs in the world", ref outlines))
+        {
+            _config.ShowMobOutlines = outlines;
+            if (!outlines)
+                _outlines.ClearAll();
+            Plugin.SaveConfiguration();
+        }
+        UiHelpers.HelpMarker(
+            "Uses the game's own silhouette highlight, so it traces the actual model. Red means the " +
+            "mob can aggro you; black means it cannot, because you outlevel it. The game's palette " +
+            "has no grey, so black is the closest. Off by default — this writes to the game's render " +
+            "state rather than drawing an overlay, and every outline is removed again when you switch " +
+            "it off or unload the plugin.");
 
         var ignoreOutleveled = _config.IgnoreOutleveledEnemies;
         if (ImGui.Checkbox("Ignore enemies you outlevel", ref ignoreOutleveled))
