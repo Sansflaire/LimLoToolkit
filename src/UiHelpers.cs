@@ -17,6 +17,9 @@ public static class UiHelpers
     public static readonly Vector4 Warn   = new(0.95f, 0.72f, 0.32f, 1.00f);
     public static readonly Vector4 Bad    = new(0.92f, 0.36f, 0.34f, 1.00f);
 
+    /// <summary>Hand-confirmed values. Outranks the measured states.</summary>
+    public static readonly Vector4 Official = new(0.74f, 0.53f, 0.98f, 1.00f);
+
     /// <summary>Green / amber / red for a solved, partial, or empty data set.</summary>
     public static Vector4 ConfidenceColor(Tools.AggroConfidence confidence) => confidence switch
     {
@@ -24,6 +27,14 @@ public static class UiHelpers
         Tools.AggroConfidence.Learning  => Warn,
         _                               => Bad,
     };
+
+    /// <summary>
+    /// Colour for a mob's overall state. Locked wins over everything: those are
+    /// the official values, established by hand rather than inferred, and that
+    /// is a different claim from "the samples agree".
+    /// </summary>
+    public static Vector4 StateColor(Tools.AggroConfidence confidence, bool locked) =>
+        locked ? Official : ConfidenceColor(confidence);
 
     /// <summary>
     /// Coloured text on a single line. For short labels only — table cells,

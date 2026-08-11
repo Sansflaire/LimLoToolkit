@@ -658,9 +658,13 @@ public sealed class EnemyVisionTool : ITool
             {
                 ImGui.TableNextRow();
 
+                var rowProfile = _store.Find(shape.BaseId);
+
                 ImGui.TableNextColumn();
                 UiHelpers.Colored(
-                    shape.PlayerInside ? DangerColor : UiHelpers.ConfidenceColor(shape.Confidence),
+                    shape.PlayerInside
+                        ? DangerColor
+                        : UiHelpers.StateColor(shape.Confidence, rowProfile?.Locked ?? false),
                     shape.Name);
 
                 ImGui.TableNextColumn();
@@ -675,10 +679,12 @@ public sealed class EnemyVisionTool : ITool
                 ImGui.TextUnformatted($"{shape.Distance:F1}y");
 
                 ImGui.TableNextColumn();
-                var profile = _store.Find(shape.BaseId);
-                UiHelpers.Colored(
-                    UiHelpers.ConfidenceColor(shape.Confidence),
-                    DescribeConfidence(shape.Confidence, profile?.Distances.Count ?? 0));
+                if (rowProfile?.Locked == true)
+                    UiHelpers.Colored(UiHelpers.Official, "Official");
+                else
+                    UiHelpers.Colored(
+                        UiHelpers.ConfidenceColor(shape.Confidence),
+                        DescribeConfidence(shape.Confidence, rowProfile?.Distances.Count ?? 0));
 
                 ImGui.TableNextColumn();
                 if (ImGui.SmallButton($"Ignore###limlo-ignore-{shape.BaseId}"))
@@ -806,17 +812,21 @@ public sealed class EnemyVisionTool : ITool
 
     private static void DrawLegend()
     {
-        UiHelpers.Colored(UiHelpers.Good, "Green");
+        UiHelpers.Colored(UiHelpers.Official, "Purple");
+        ImGui.SameLine();
+        ImGui.TextUnformatted("official");
+        ImGui.SameLine();
+        UiHelpers.Colored(UiHelpers.Good, "  Green");
         ImGui.SameLine();
         ImGui.TextUnformatted("solved");
         ImGui.SameLine();
         UiHelpers.Colored(UiHelpers.Warn, "  Yellow");
         ImGui.SameLine();
-        ImGui.TextUnformatted("some data");
+        ImGui.TextUnformatted("learning");
         ImGui.SameLine();
         UiHelpers.Colored(UiHelpers.Bad, "  Red");
         ImGui.SameLine();
-        ImGui.TextUnformatted("no data");
+        ImGui.TextUnformatted("none");
         ImGui.Spacing();
     }
 

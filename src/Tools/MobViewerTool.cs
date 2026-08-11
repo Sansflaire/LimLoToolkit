@@ -397,6 +397,11 @@ public sealed class MobViewerTool : ITool
                     continue;
                 }
 
+                // Official is its own tally — counting locked mobs as "solved"
+                // would overstate how much the learner has actually worked out.
+                if (profile.Locked)
+                    continue;
+
                 switch (_store.ConfidenceOf(profile))
                 {
                     case AggroConfidence.Confident: solved++;   break;
@@ -412,7 +417,7 @@ public sealed class MobViewerTool : ITool
             UiHelpers.Colored(UiHelpers.Bad, $"{empty} empty");
 
             if (_store.LockedCount > 0)
-                UiHelpers.Muted($"{_store.LockedCount} locked by you");
+                UiHelpers.Colored(UiHelpers.Official, $"{_store.LockedCount} official");
 
             if (irrelevantCount > 0)
                 UiHelpers.Muted($"{irrelevantCount} irrelevant (ignored or outlevelled)");
@@ -438,22 +443,16 @@ public sealed class MobViewerTool : ITool
                 // Irrelevant mobs stay visible but recede to grey — they are not
                 // part of the green/amber/red story any more.
                 ImGui.PushStyleColor(ImGuiCol.Text,
-                    irrelevant ? UiHelpers.Dim : UiHelpers.ConfidenceColor(confidence));
+                    irrelevant
+                        ? UiHelpers.Dim
+                        : UiHelpers.StateColor(confidence, profile.Locked));
                 var label = string.IsNullOrEmpty(profile.Name) ? $"#{profile.BaseId}" : profile.Name;
                 if (ImGui.Selectable($"{label}###limlo-mob-{profile.BaseId}", profile.BaseId == _selectedBaseId))
                     _selectedBaseId = profile.BaseId;
                 ImGui.PopStyleColor();
 
-                // Locked mobs are green like solved ones, so mark them apart —
-                // "confirmed by hand" and "worked out from samples" are
-                // different kinds of certainty.
-                if (profile.Locked)
-                {
-                    ImGui.SameLine();
-                    UiHelpers.Colored(UiHelpers.Good, "L");
-                    if (ImGui.IsItemHovered())
-                        ImGui.SetTooltip("Locked — values confirmed by you");
-                }
+                if (profile.Locked && ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Official — values locked by you");
 
                 if (_nearby.Contains(profile.BaseId))
                 {
@@ -801,6 +800,9 @@ public sealed class MobViewerTool : ITool
                 + "so it can never aggro you. Not drawn, not trained on.");
         else if (ignored)
             UiHelpers.ColoredWrapped(UiHelpers.Dim, "Ignored — not drawn, not trained on.");
+        else if (profile.Locked)
+            UiHelpers.ColoredWrapped(UiHelpers.Official,
+                "OFFICIAL — values locked by you. The learner will not change them.");
         else
             UiHelpers.ColoredWrapped(
                 UiHelpers.ConfidenceColor(confidence),
@@ -835,12 +837,14 @@ public sealed class MobViewerTool : ITool
 
         var model = AggroLearningStore.Classify(profile);
 
-        var verdictColour = model.Type switch
-        {
-            DetectionType.Cone   => UiHelpers.Good,
-            DetectionType.Radius => UiHelpers.Good,
-            _                    => UiHelpers.Warn,
-        };
+        var verdictColour = profile.Locked
+            ? UiHelpers.Official
+            : model.Type switch
+            {
+                DetectionType.Cone   => UiHelpers.Good,
+                DetectionType.Radius => UiHelpers.Good,
+                _                    => UiHelpers.Warn,
+            };
 
         UiHelpers.ColoredWrapped(verdictColour, model.Type switch
         {
