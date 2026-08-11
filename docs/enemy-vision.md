@@ -226,6 +226,51 @@ The `ForayInfo` read follows the same approach as
 [BOCCHI](https://github.com/OhKannaDuh/BOCCHI)'s `KnowledgeThreat`, which uses it
 for its Ninja Hide logic and pins the Knowledge cap at 40.
 
+## Laying the shapes on the ground
+
+Drawn flat at the enemy's own height, a detection ring on a hillside hovers over
+the downhill side and buries itself in the uphill one. It now follows the
+terrain instead.
+
+**Mechanism.** `BGCollisionModule.RaycastMaterialFilter(Vector3 origin, Vector3
+direction, out RaycastHit hit, float maxDistance)` — the game's own background
+collision, reached as a static; the module pointer on
+`Framework.Instance()->BGCollisionModule` is fetched first only to confirm the
+world is loaded. A ray is fired straight down over each point of the outline
+from 4y above the enemy's feet, looking 25y down, and the hit's `Point.Y` is
+used. No vnavmesh, no sibling plugin, no IPC — the standalone mandate holds.
+
+A miss (a hole, unloaded terrain, the edge of the world) falls back to the
+enemy's own height. A point at the wrong height still beats a gap in the shape.
+
+### Why it is cached
+
+A 48-segment ring is 49 raycasts. Twenty enemies at sixty frames a second would
+be sixty thousand raycasts a second, which is not a thing to do to somebody's
+game. So `GroundSampler` keeps each enemy's sampled outline and rebuilds it only
+when that enemy actually moves (>0.35y), turns (>3°, cones only — a ring looks
+the same whichever way a mob faces), or changes size.
+
+**At most `RebuildsPerTick` (2) outlines are sampled in any one tick.** That is
+the load-bearing part: it caps the cost regardless of how many enemies are on
+screen. When the budget is spent, a shape keeps its previous outline, or draws
+flat if it has never been sampled. Both are cosmetic — a stale shape lags by a
+frame or two, it does not vanish. Enemies mostly stand still, so the steady
+state costs nothing at all.
+
+Cones sample their two radial edges as well. On a slope a straight line from the
+enemy out to the arc cuts through the hill exactly as visibly as the arc would.
+
+### What it does not change
+
+The shapes are drawn on ImGui's foreground list, so they are still drawn over
+terrain rather than occluded by it. Following the mesh changes the *path* the
+line takes, not whether a hill in front of you hides it.
+
+The Mob Viewer's pink missing-angle wedges are still drawn flat. They are a
+dev-build measurement aid that marks a direction to walk in, not a claim about
+ground.
+
 ## Mob silhouettes — the game's own outline
 
 Switched on in **Settings → World Overlays**. It puts the game's targeting

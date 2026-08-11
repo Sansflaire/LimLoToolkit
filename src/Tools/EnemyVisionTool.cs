@@ -76,11 +76,23 @@ public sealed class EnemyVisionTool : ITool
         public float           Distance        { get; } = distance;
         public AggroConfidence Confidence      { get; } = confidence;
         public bool            Measured        { get; } = measured;
+
+        /// <summary>
+        /// The outline dropped onto the terrain, sampled on the game thread.
+        /// Null while it is still queued, in which case the shape draws flat -
+        /// a frame of the old look beats a frame of nothing.
+        /// </summary>
+        public Vector3[]?      GroundLoop      { get; init; }
+
+        /// <summary>Wedge sides, ground-sampled. Null for a closed loop.</summary>
+        public Vector3[]?      GroundEdgeA     { get; init; }
+        public Vector3[]?      GroundEdgeB     { get; init; }
     }
 
     private readonly Configuration      _config;
     private readonly AggroLearningStore _store;
     private readonly MobOutlines        _outlines = new();
+    private readonly GroundSampler      _ground   = new();
 
 #if !PUBLIC_BUILD
     private readonly AggroTrainer _trainer;
@@ -180,6 +192,11 @@ public sealed class EnemyVisionTool : ITool
             // player cannot aggro at all, so those are skipped entirely — both
             // to cut clutter and to keep them from feeding the trainer endless
             // meaningless "it did not notice me" evidence.
+            if (_config.FollowGroundMesh)
+                _ground.BeginTick();
+            else
+                _ground.Clear();
+
             var outlined    = new HashSet<ulong>();
             var playerForay = ForayLevel.TryGet(player);
 
@@ -317,6 +334,9 @@ public sealed class EnemyVisionTool : ITool
                 if (inside)
                     threatening++;
 
+                var (groundLoop, groundEdgeA, groundEdgeB) = SampleGround(
+                    obj, profile, model, classified, effectiveOmni, radius, drawCone, cone, gap);
+
                 shapes.Add(new Shape(
                     obj.Position,
                     obj.Rotation,
@@ -334,6 +354,9 @@ public sealed class EnemyVisionTool : ITool
                     HitboxRadius = obj.HitboxRadius,
                     Profile      = profile,
                     Model        = model,
+                    GroundLoop   = groundLoop,
+                    GroundEdgeA  = groundEdgeA,
+                    GroundEdgeB  = groundEdgeB,
                 });
             }
 
@@ -364,6 +387,61 @@ public sealed class EnemyVisionTool : ITool
 
     // ── Overlay ──────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Asks the sampler for this mob's outline laid on the terrain, matching
+    /// whichever of the three shapes the overlay is going to draw.
+    ///
+    /// Returns nulls when ground-following is off or the sampler's per-tick
+    /// budget is spent, and the overlay falls back to drawing flat.
+    /// </summary>
+    private (Vector3[]? Loop, Vector3[]? EdgeA, Vector3[]? EdgeB) SampleGround(
+        IGameObject    obj,
+        AggroProfile?  profile,
+        DetectionModel model,
+        bool           classified,
+        bool           effectiveOmni,
+        float          radius,
+        float          drawCone,
+        float          cone,
+        float          gap)
+    {
+        if (!_config.FollowGroundMesh)
+            return (null, null, null);
+
+        var sampleCone = drawCone;
+        Func<float, float>? radialAt = null;
+
+        // An unclassified mob with evidence draws a closed loop whose reach
+        // varies with angle, so the sampler needs the same per-angle function
+        // the overlay would have used.
+        if (!classified && AggroLearningStore.HasEvidence(profile))
+        {
+            sampleCone = 360f;
+
+            var capturedProfile = profile;
+            var capturedModel   = model;
+            var hitbox          = obj.HitboxRadius;
+            var omni            = effectiveOmni;
+
+            radialAt = offFacing =>
+            {
+                var fallback = !omni && cone < 360f && offFacing > cone * 0.5f ? 0f : gap;
+                var reach    = AggroLearningStore.ReachForDrawing(
+                    capturedProfile, capturedModel, offFacing, fallback);
+
+                return Math.Clamp(reach, 0f, MaxRadius) + hitbox;
+            };
+        }
+
+        var sampled = _ground.Get(
+            obj.GameObjectId, obj.Position, obj.Rotation,
+            radius, sampleCone, CircleSegments, radialAt);
+
+        return sampled is { } outline
+            ? (outline.Loop, outline.EdgeA, outline.EdgeB)
+            : (null, null, null);
+    }
+
     public void DrawOverlay()
     {
         if (!_inOccultCrescent)
@@ -391,6 +469,22 @@ public sealed class EnemyVisionTool : ITool
                 highlight && shape.PlayerInside
                     ? DangerColor
                     : shape.Omnidirectional ? SoundColor : SightColor);
+
+            // Ground-sampled outline wins whenever there is one: it is the
+            // same shape, just laid on the terrain instead of held at the mob's
+            // own height. Everything below is the flat fallback for a shape
+            // whose sampling has not come round yet.
+            if (shape.GroundLoop is { Length: > 1 })
+            {
+                DrawGroundPolyline(drawList, shape.GroundLoop, colour, thickness);
+
+                if (shape.GroundEdgeA is { Length: > 1 })
+                    DrawGroundPolyline(drawList, shape.GroundEdgeA, colour, thickness);
+                if (shape.GroundEdgeB is { Length: > 1 })
+                    DrawGroundPolyline(drawList, shape.GroundEdgeB, colour, thickness);
+
+                continue;
+            }
 
             // Once a mob is classified it is one of the two real shapes, drawn
             // clean — the evidence already went into deciding which and how big.
@@ -458,6 +552,31 @@ public sealed class EnemyVisionTool : ITool
                 shape.Position.Y,
                 shape.Position.Z + r * MathF.Cos(worldAngle));
 
+            if (!Plugin.GameGui.WorldToScreen(point, out var screen))
+            {
+                previous = null;
+                continue;
+            }
+
+            if (previous is { } prev)
+                drawList.AddLine(prev, screen, colour, thickness);
+
+            previous = screen;
+        }
+    }
+
+    /// <summary>
+    /// Projects a run of world points and joins them up. A point behind the
+    /// camera breaks the run rather than joining across the screen, which is
+    /// the same rule the flat drawing uses.
+    /// </summary>
+    private static void DrawGroundPolyline(
+        ImDrawListPtr drawList, Vector3[] points, uint colour, float thickness)
+    {
+        Vector2? previous = null;
+
+        foreach (var point in points)
+        {
             if (!Plugin.GameGui.WorldToScreen(point, out var screen))
             {
                 previous = null;
@@ -588,6 +707,18 @@ public sealed class EnemyVisionTool : ITool
             _config.HighlightEnemyVisionWhenInside = highlight;
             Plugin.SaveConfiguration();
         }
+
+        var ground = _config.FollowGroundMesh;
+        if (ImGui.Checkbox("Lay the shapes on the ground", ref ground))
+        {
+            _config.FollowGroundMesh = ground;
+            Plugin.SaveConfiguration();
+        }
+        UiHelpers.HelpMarker(
+            "Follows the terrain instead of drawing the shape flat at the enemy's own height, so a "
+            + "ring on a slope sits on the slope. Sampled from the game's own collision, cached per "
+            + "enemy and re-sampled only when one moves, so standing still costs nothing. Switch it "
+            + "off if it ever looks wrong on odd geometry — the flat shape covers the same ground.");
 
         // Mob silhouettes live in Settings alongside the other world overlays.
         // One switch, one home — a second copy here would be a second place to

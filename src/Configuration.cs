@@ -88,6 +88,15 @@ public sealed class Configuration : IPluginConfiguration
     public bool HighlightEnemyVisionWhenInside { get; set; } = true;
 
     /// <summary>
+    /// Lay the detection shapes on the terrain rather than drawing them flat at
+    /// the enemy's own height, so a ring on a slope follows the slope.
+    ///
+    /// Sampled with the game's own background collision, cached per mob and
+    /// rebuilt only when one moves — see <see cref="Tools.GroundSampler"/>.
+    /// </summary>
+    public bool FollowGroundMesh { get; set; } = true;
+
+    /// <summary>
     /// Outline mobs in the world with the game's own silhouette highlight —
     /// red for anything that can aggro, black for anything that cannot.
     ///
