@@ -156,18 +156,11 @@ public sealed class Configuration : IPluginConfiguration
     public bool MinimapMirror { get; set; } = false;
 
     /// <summary>
-    /// Whether the minimap turns with the character rather than staying
-    /// north-up. Off by default: north-up is the common setup and the one
-    /// verified against a real client.
-    ///
-    /// This is a user setting rather than a reading of
-    /// <c>Atk2DNaviMap.NorthLockedUp</c> on purpose. That field reported false
-    /// on a minimap observed not to turn at all through a full circle of
-    /// character facings (2026-08-11), so a rotation was being applied to a
-    /// stationary map. An auto-detection that cannot be validated is worse than
-    /// asking. See docs/minimap-radar.md.
+    /// Multiplier on how far out the dots sit. 1.0 unless the computed scale is
+    /// off; every term feeding it is read from the game, so it should not need
+    /// touching. See MinimapRadarTool.
     /// </summary>
-    public bool MinimapRotatesWithCharacter { get; set; } = false;
+    public float MinimapScaleTrim { get; set; } = 1.0f;
 
     // --- Mob Viewer ---
 

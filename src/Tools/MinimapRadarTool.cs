@@ -32,8 +32,8 @@ namespace LimLoToolkit.Tools;
 /// addon  = GameGui.GetAddonByName("_NaviMap")   -> AddonNaviMap*
 /// map    = addon->NaviMap                       -> Atk2DNaviMap
 ///
-/// centre = map.PlayerPin node's ScreenX/Y       // the player dot, i.e. the middle
-/// scale  = map.MarkerPositionScaling            // yalms -> minimap pixels
+/// centre = addon->MapBase node's ScreenX/Y      // the map circle, NOT the pin
+/// scale  = map.MarkerPositionScaling * (nodeWidth / map.Width) * addonScale
 /// north  = map.NorthLockedUp                    // is the map fixed north-up
 /// </code>
 ///
@@ -42,11 +42,21 @@ namespace LimLoToolkit.Tools;
 /// map turns so the direction the CHARACTER faces points up, which is a
 /// rotation of <c>playerRotation - pi</c> applied to that same offset.
 ///
-/// **It follows the character, not the camera.** This shipped using
-/// <c>Camera.DirH</c> and was wrong: swinging the camera around a stationary
-/// character left the minimap still while every dot rotated. If a future change
-/// makes the dots drift when the camera moves but the character does not, this
-/// is the line that regressed.
+/// **Two bugs worth not repeating**, both found by reading live memory rather
+/// than by staring at screenshots:
+///
+/// 1. The centre came from <c>PlayerPin</c>. That node is the player ARROW and
+///    it rotates with the character, so the axis-aligned half-size term used to
+///    find its middle swung the whole frame in a circle as the character turned.
+///    Reported as "the dots are offset from where I am" and "they shift as I
+///    turn" — one fault, two symptoms. <c>MapBase</c> does not rotate.
+/// 2. The rotation came from <c>Camera.DirH</c>. The minimap follows the
+///    CHARACTER. Confirmed live: player at -135 degrees, PlayerPinRotation 45,
+///    i.e. exactly <c>facing + 180</c>.
+///
+/// Because the centre comes from a node's post-transform screen position, HUD
+/// layout position, HUD scale and addon scale are all already applied. Moving
+/// the minimap in the HUD editor needs no configuration at all.
 /// </summary>
 public sealed class MinimapRadarTool : ITool
 {
@@ -63,6 +73,9 @@ public sealed class MinimapRadarTool : ITool
 
     public const float MinDotSize = 2f;
     public const float MaxDotSize = 10f;
+
+    public const float MinScaleTrim = 0.25f;
+    public const float MaxScaleTrim = 4.0f;
 
     private static readonly Vector4 SeenByColor   = new(1.00f, 0.30f, 0.28f, 0.95f);
     private static readonly Vector4 KnownColor    = new(0.98f, 0.75f, 0.25f, 0.90f);
@@ -306,25 +319,57 @@ public sealed class MinimapRadarTool : ITool
 
         ref var map = ref addon->NaviMap;
 
-        var pin = map.PlayerPin;
-        if (pin == null)
+        // The MAP node, not the player pin. The pin is the player arrow and it
+        // ROTATES with the character; see the note on the centre below.
+        var mapBase = addon->MapBase;
+        if (mapBase == null)
             return default;
 
-        // The player pin IS the centre of the minimap, so there is no need to
-        // reconstruct the addon's rectangle — the node has already been through
-        // every transform the UI applies. ScreenX/Y is the node's TOP-LEFT, so
-        // half its size gets us to the middle of the pin.
+        // CENTRE. Taken from the map node's screen position, which has already
+        // been through every transform the UI applies — so the HUD layout
+        // position, the HUD scale and the addon's own scale are all accounted
+        // for and none of them need configuring. Move the minimap in the HUD
+        // editor and this follows it.
         //
-        // If that half-size term turns out to be wrong the dots sit a few pixels
-        // off, which is why the Orientation panel can draw the computed centre:
-        // it is easier to look at than to argue about.
-        var node    = &pin->AtkResNode;
+        // NOT from PlayerPin, which is what the first version did and is the
+        // bug reported as "the dots are offset from my actual location" and
+        // "they shift around as I turn". AtkResNode.ScreenX/Y is where the
+        // node's local (0,0) lands AFTER its transform, and the pin is the
+        // player ARROW — it rotates with the character. Adding half its size
+        // axis-aligned therefore swung the computed centre in a circle around
+        // the true one as the character turned.
+        //
+        // Verified against live memory 2026-08-11: pin ScreenX/Y (2484.06,
+        // 93.62), rotation -4.9218 rad, origin (16,16), addon scale 0.8.
+        // Undoing the rotation properly —
+        //     centre = screen + scale * R(rotation) . origin
+        // — lands on (2474.20, 108.80), which is MapBase's centre to three
+        // decimal places. MapBase does not rotate, so it needs none of that.
+        var node    = &mapBase->AtkResNode;
         var uiScale = handle.Scale <= 0f ? 1f : handle.Scale;
 
         var centre = new Vector2(
             node->ScreenX + node->Width * 0.5f * uiScale,
             node->ScreenY + node->Height * 0.5f * uiScale);
-        var radius  = (MathF.Min(map.Width, map.Height) * 0.5f - _config.MinimapEdgeInset) * uiScale;
+
+        var radius = MathF.Min(node->Width, node->Height) * 0.5f * uiScale - _config.MinimapEdgeInset;
+
+        // SCALE. MarkerPositionScaling converts yalms into the marker coordinate
+        // space, in which the map spans Atk2DNaviMap.Width. The map NODE is
+        // node->Width pixels wide, so the ratio between the two converts to
+        // pixels, and the addon scale converts to screen. Every term is read
+        // from the game, so zoom and HUD scale come along for free.
+        //
+        // Measured live 2026-08-11: MarkerPositionScaling 0.5, map.Width 88,
+        // node width 176, addon scale 0.8 — 0.8 px per yalm, an 88 yalm visible
+        // radius. The Width-to-node ratio is the one step not confirmed against
+        // a second source, which is what the trim in the Orientation panel is
+        // for.
+        var spanUnits = map.Width > 0 ? map.Width : (ushort)88;
+        var scale     = map.MarkerPositionScaling
+                        * (node->Width / (float)spanUnits)
+                        * uiScale
+                        * Math.Clamp(_config.MinimapScaleTrim, MinScaleTrim, MaxScaleTrim);
 
         var dirH = 0f;
         var cameraManager = CameraManager.Instance();
@@ -347,22 +392,18 @@ public sealed class MinimapRadarTool : ITool
         //  => r - phi = pi
         //  => phi = r - pi
         //
-        // NorthLockedUp is DELIBERATELY NOT USED to decide this. Observed
-        // 2026-08-11 across four screenshots (character facing N, S, E and W):
-        // the minimap's terrain did not turn at all, so the map was north-up,
-        // yet this field read false and a rotation was applied — which is the
-        // bug that was reported. Either the field means something other than
-        // its name or it is not the whole story.
+        // NorthLockedUp IS trusted, having been read out of live memory on
+        // 2026-08-11: it was true on a minimap whose terrain demonstrably did
+        // not turn through a full circle of character facings. An earlier note
+        // here claimed the opposite and was wrong — the dots moving as the
+        // character turned was the PIN-derived centre orbiting, not a rotation
+        // being applied. One bug wearing two symptoms.
         //
-        // An auto-detection that cannot be validated is worse than an explicit
-        // setting, so the user says which minimap they have and the field is
-        // only reported in the diagnostics. The raw values are logged while the
-        // Orientation panel is open; once the relationship between
-        // PlayerPinRotation and the character's facing is confirmed from real
-        // numbers, this can go back to deciding for itself.
-        var rotation = _config.MinimapRotatesWithCharacter
-            ? playerRotation - MathF.PI
-            : 0f;
+        // The character-facing form is confirmed too: with the player at -135
+        // degrees, PlayerPinRotation read 45, which is `facing + 180` — the same
+        // angle as `facing - pi`. So when the map does turn, this is the right
+        // expression for it.
+        var rotation = map.NorthLockedUp ? 0f : playerRotation - MathF.PI;
 
         rotation += _config.MinimapRotationOffsetDegrees * MathF.PI / 180f;
 
@@ -370,7 +411,7 @@ public sealed class MinimapRadarTool : ITool
             found:           true,
             centre:          centre,
             radius:          MathF.Max(8f, radius),
-            scale:           map.MarkerPositionScaling * uiScale,
+            scale:           scale,
             northLocked:     map.NorthLockedUp,
             coneRotation:    map.PlayerConeRotation,
             pinRotation:     map.PlayerPinRotation,
@@ -516,13 +557,13 @@ public sealed class MinimapRadarTool : ITool
 
         Plugin.Log.Information(
             "[MinimapRadar] facing={0:F1} pin={1:F1} cone={2:F1} dirH={3:F1} "
-            + "northLocked={4} rotatesSetting={5} applied={6:F1} scale={7:F2} centre=({8:F0},{9:F0}) r={10:F0}",
+            + "northLocked={4} trim={5:F2} applied={6:F1} scale={7:F2} centre=({8:F0},{9:F0}) r={10:F0}",
             _state.PlayerRotation  * toDegrees,
             _state.PinRotation     * toDegrees,
             _state.ConeRotation    * toDegrees,
             _state.CameraDirH      * toDegrees,
             _state.NorthLocked,
-            _config.MinimapRotatesWithCharacter,
+            _config.MinimapScaleTrim,
             _state.AppliedRotation * toDegrees,
             _state.Scale,
             _state.Centre.X, _state.Centre.Y,
@@ -593,19 +634,17 @@ public sealed class MinimapRadarTool : ITool
 
         ImGui.Spacing();
 
-        var rotates = _config.MinimapRotatesWithCharacter;
-        if (ImGui.Checkbox("My minimap turns with my character", ref rotates))
+        ImGui.SetNextItemWidth(200f);
+        var trim = Math.Clamp(_config.MinimapScaleTrim, MinScaleTrim, MaxScaleTrim);
+        if (ImGui.SliderFloat("Distance trim", ref trim, MinScaleTrim, MaxScaleTrim, "%.2fx"))
         {
-            _config.MinimapRotatesWithCharacter = rotates;
+            _config.MinimapScaleTrim = Math.Clamp(trim, MinScaleTrim, MaxScaleTrim);
             Plugin.SaveConfiguration();
         }
         UiHelpers.HelpMarker(
-            "Leave this OFF if your minimap stays north-up — the compass fixed, the terrain "
-            + "still as you turn. That is the default and the common setup. Turn it ON only if the "
-            + "map itself spins as your character turns.\n\n"
-            + "This is asked rather than detected: the game field that should answer it reported "
-            + "\"not locked\" for a minimap that demonstrably never turned, so it is shown in the "
-            + "table below but not acted on.");
+            "Multiplies how far out the dots sit. Leave it at 1.00 unless they are consistently "
+            + "too near or too far — the scale is computed from the game's own marker fields and "
+            + "follows your zoom, so it should not need touching.");
 
         ImGui.Spacing();
 
@@ -646,7 +685,7 @@ public sealed class MinimapRadarTool : ITool
             UiHelpers.Row("Centre on screen",   $"{_state.Centre.X:F0}, {_state.Centre.Y:F0}");
             UiHelpers.Row("Radius",             $"{_state.Radius:F0} px");
             UiHelpers.Row("Yalms to pixels",    $"{_state.Scale:F2}");
-            UiHelpers.Row("Game says north-locked", (_state.NorthLocked ? "Yes" : "No") + " (not trusted)");
+            UiHelpers.Row("North-locked",       _state.NorthLocked ? "Yes" : "No");
             UiHelpers.Row("Player pin",         $"{_state.PinRotation * 180f / MathF.PI:F1}°");
             UiHelpers.Row("Player cone",        $"{_state.ConeRotation * 180f / MathF.PI:F1}°");
             UiHelpers.Row("Your facing",        $"{_state.PlayerRotation * 180f / MathF.PI:F1}°");
