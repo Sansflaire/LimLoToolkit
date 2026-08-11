@@ -228,9 +228,15 @@ for its Ninja Hide logic and pins the Knowledge cap at 40.
 
 ## Laying the shapes on the ground
 
+**Off by default.** Flat — "Straight outwards" in the Enemy Vision panel — is
+the long-standing look and stays the default; ground-following is the opt-in
+alternative. It shipped switched on in 0.21.0.0 and that was wrong: a new way of
+drawing does not get to change what people already see without being asked for.
+A config migration (v2 → v3) puts anyone who picked it up by default back.
+
 Drawn flat at the enemy's own height, a detection ring on a hillside hovers over
-the downhill side and buries itself in the uphill one. It now follows the
-terrain instead.
+the downhill side and buries itself in the uphill one. Switched on, it follows
+the terrain instead.
 
 **Mechanism.** `BGCollisionModule.RaycastMaterialFilter(Vector3 origin, Vector3
 direction, out RaycastHit hit, float maxDistance)` — the game's own background

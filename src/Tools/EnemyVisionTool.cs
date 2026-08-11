@@ -720,9 +720,9 @@ public sealed class EnemyVisionTool : ITool
             Plugin.SaveConfiguration();
         }
         UiHelpers.HelpMarker(
-            "Flat, at the enemy's own height. Clean and cheap, and on level ground it is exactly "
-            + "right. On a slope the ring hovers over the downhill side and sinks into the uphill "
-            + "one.");
+            "The default, and how this has always drawn. Flat, at the enemy's own height. Clean, "
+            + "costs nothing, and on level ground it is exactly right. On a slope the ring hovers "
+            + "over the downhill side and sinks into the uphill one.");
 
         ImGui.SameLine();
 
@@ -732,10 +732,10 @@ public sealed class EnemyVisionTool : ITool
             Plugin.SaveConfiguration();
         }
         UiHelpers.HelpMarker(
-            "Follows the terrain, so the shape sits on whatever is underneath it. Sampled from the "
-            + "game's own collision, cached per enemy and re-sampled only when one moves, so "
-            + "standing still costs nothing. Falls back to flat for an enemy not sampled yet, and "
-            + "over a hole or unloaded ground.");
+            "Opt-in. Follows the terrain, so the shape sits on whatever is underneath it. Sampled "
+            + "from the game's own collision, cached per enemy and re-sampled only when one moves, "
+            + "so standing still costs nothing. Falls back to flat for an enemy not sampled yet, "
+            + "and over a hole or unloaded ground.");
 
         // Mob silhouettes live in Settings alongside the other world overlays.
         // One switch, one home — a second copy here would be a second place to

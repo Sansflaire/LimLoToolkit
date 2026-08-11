@@ -21,7 +21,7 @@ public sealed class Configuration : IPluginConfiguration
     /// into it — see <see cref="Migrate"/>. A new field alone does not need a
     /// bump; a missing property already picks up its initializer.
     /// </summary>
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
 
     public int Version { get; set; } = 1;
 
@@ -93,8 +93,13 @@ public sealed class Configuration : IPluginConfiguration
     ///
     /// Sampled with the game's own background collision, cached per mob and
     /// rebuilt only when one moves — see <see cref="Tools.GroundSampler"/>.
+    ///
+    /// **Off by default.** Flat is the long-standing look and the one that costs
+    /// nothing; ground-following is the addition, and an addition does not get
+    /// to change what people already see without being asked for. It shipped on
+    /// by default in 0.21.0.0, which was wrong — see <see cref="Migrate"/>.
     /// </summary>
-    public bool FollowGroundMesh { get; set; } = true;
+    public bool FollowGroundMesh { get; set; } = false;
 
     /// <summary>
     /// Outline mobs in the world with the game's own silhouette highlight —
@@ -261,6 +266,16 @@ public sealed class Configuration : IPluginConfiguration
         // selected mob and existing files are moved with it.
         if (Version < 2)
             TargetDistanceSelectedMobOnly = true;
+
+        // v2 -> v3: ground-following shipped switched ON in 0.21.0.0. A new way
+        // of drawing does not get to change what people already see without
+        // being asked for, so it is opt-in and anyone who picked it up by
+        // default is put back. This overrides a stored value deliberately: the
+        // setting existed for a matter of minutes and nobody chose `true` — they
+        // were given it. Turning it back on afterwards sticks, because the
+        // migration runs once and the version is saved immediately.
+        if (Version < 3)
+            FollowGroundMesh = false;
 
         Version = CurrentVersion;
         return true;
