@@ -127,41 +127,6 @@ public sealed class Configuration : IPluginConfiguration
     /// </summary>
     public float OverlayThickness { get; set; } = 2.5f;
 
-    // --- Minimap Radar ---
-
-    /// <summary>Draw a dot on the game's minimap for each nearby mob.</summary>
-    public bool ShowMinimapRadar { get; set; } = true;
-
-    /// <summary>Dot radius in pixels.</summary>
-    public float MinimapDotSize { get; set; } = 4f;
-
-    /// <summary>Pin mobs beyond the minimap's edge to the rim as hollow rings.</summary>
-    public bool MinimapShowOffEdge { get; set; } = true;
-
-    /// <summary>Include mobs the player outlevels, drawn dimmer.</summary>
-    public bool MinimapShowHarmlessMobs { get; set; } = false;
-
-    /// <summary>How far inside the minimap's edge the rim sits, in pixels.</summary>
-    public float MinimapEdgeInset { get; set; } = 8f;
-
-    /// <summary>
-    /// Correction for the minimap rotation. The centre and the scale are read
-    /// from the game's own marker fields and are certain; the rotation had to be
-    /// derived from <c>Camera.DirH</c>, whose convention could not be confirmed
-    /// without the game running. See MinimapRadarTool.
-    /// </summary>
-    public float MinimapRotationOffsetDegrees { get; set; } = 0f;
-
-    /// <summary>Flips east/west, for the same reason as the offset above.</summary>
-    public bool MinimapMirror { get; set; } = false;
-
-    /// <summary>
-    /// Multiplier on how far out the dots sit. 1.0 unless the computed scale is
-    /// off; every term feeding it is read from the game, so it should not need
-    /// touching. See MinimapRadarTool.
-    /// </summary>
-    public float MinimapScaleTrim { get; set; } = 1.0f;
-
     // --- Mob Viewer ---
 
     /// <summary>

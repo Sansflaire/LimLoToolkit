@@ -60,9 +60,11 @@ public sealed class MobViewerTool : ITool
     // red flags and covered the map. Nothing here writes to the game's UI.
     // Sightings are shown only on the plugin's own plot below.
     //
-    // Minimap dots came back in 0.20.0 as MinimapRadarTool, but by DRAWING OVER
-    // the minimap rather than adding real markers, so the size is ours to choose
-    // and there is nothing to clean up. Do not reintroduce AgentMap markers.
+    // Minimap dots were tried again in 0.20.0 (MinimapRadarTool, drawing OVER
+    // the minimap rather than adding markers) and removed in 0.23.0.0 at the
+    // user's request. If they are ever attempted a third time: do not use
+    // AgentMap, and read docs/minimap-radar.md first — the transform is worked
+    // out and verified there.
 
     private static readonly Vector4 SightingColor = new(0.35f, 0.85f, 1.00f, 0.90f);
 

@@ -1,33 +1,34 @@
-# Minimap Radar — how a world position becomes a minimap dot
+# Minimap Radar — REMOVED, kept for its findings
 
-Every number below was read out of `FFXIVClientStructs.dll` in the Dalamud dev
-folder with the probe pattern from CLAUDE.md §3. None of it is measured off a
-screenshot or copied from another plugin.
+**The Minimap Radar tool was removed in 0.23.0.0** at the user's request, after
+a day of it never quite sitting still. This document survives it because the
+transform below was verified against live memory and would otherwise have to be
+worked out from scratch by whoever tries this next.
 
-## Why we draw over the minimap instead of adding markers
+**If you are about to add minimap dots again, read this whole file first, and
+read [`../Issues/012-minimap-centre-from-a-rotating-node.md`](../Issues/012-minimap-centre-from-a-rotating-node.md).**
 
-The game has a real API for this: `AgentMap.AddMiniMapMarker(Vector3 position,
-uint icon, int scale)`, with `_miniMapMarkers` as a `FixedSizeArray100` and
-`ResetMiniMapMarkers()` to clear.
+## Why NOT to use AgentMap
 
-We do not use it.
+The game has a real API: `AgentMap.AddMiniMapMarker(Vector3 position, uint icon,
+int scale)`, with `_miniMapMarkers` as a `FixedSizeArray100` and
+`ResetMiniMapMarkers()` to clear. **Do not use it.**
 
-An earlier version of the Mob Viewer added markers through `AgentMap` and they
-came out as large red flags that covered the map; the feature was pulled at the
-user's request. Beyond the look, the API has three properties we do not want:
+An early Mob Viewer added markers through `AgentMap` and they came out as large
+red flags covering the map; the feature was pulled at the user's request. Beyond
+the look:
 
-- **The icon is a game icon.** Size and appearance come from the icon sheet, not
-  from us. A small neutral dot is not on the menu.
-- **It is shared state.** `ResetMiniMapMarkers()` clears the game's markers too,
-  so cleaning up after ourselves means rebuilding quest and aetheryte markers
-  with `CreateMiniMapMarkers`. Getting that wrong breaks the player's minimap.
-- **It survives us.** A crash or a plugin reload mid-frame leaves markers on the
-  map with nothing left to remove them.
+- **The icon is a game icon.** Size and appearance come from the icon sheet. A
+  small neutral dot is not on the menu.
+- **It is shared state.** `ResetMiniMapMarkers()` clears the game's own markers
+  too, so cleaning up means rebuilding quest and aetheryte markers with
+  `CreateMiniMapMarkers`. Getting that wrong breaks the player's minimap.
+- **It survives us.** A crash or reload mid-frame leaves markers behind with
+  nothing left to remove them.
 
-Drawing our own dots on top has none of those problems: any size, any colour,
-nothing written, nothing to clean up.
+Drawing over the addon has none of those problems.
 
-## The transform
+## The verified transform
 
 ```
 handle = GameGui.GetAddonByName("_NaviMap", 1)   // Dalamud AtkUnitBasePtr
@@ -35,106 +36,91 @@ addon  = (AddonNaviMap*)(nint)handle
 map    = addon->NaviMap                          // Atk2DNaviMap, @0x238
 ```
 
-`Atk2DNaviMap` inherits `Atk2DMap`, and between them they carry everything:
-
 | Field | Offset | What it is |
 |-------|--------|-----------|
-| `PlayerPin` | `+0x08` | `AtkComponentNode*` — the player arrow, i.e. the middle of the minimap |
-| `MarkerPositionScaling` | `+0x2C` | **yalms → minimap pixels.** The game's own marker scale |
+| `PlayerPin` | `+0x08` | `AtkComponentNode*` — the player ARROW. **Rotates. Not a usable anchor.** |
 | `MarkerRadiusScale` | `+0x28` | Scale used for marker radius rings |
-| `PlayerPinRotation` | `+0x30` | |
-| `PlayerConeRotation` | `+0x34` | The view cone's rotation |
-| `Width` / `Height` | `+0x40` / `+0x42` | Minimap size in pixels |
-| `NorthLockedUp` | `+0x134C` | Is the map pinned north-up |
+| `MarkerPositionScaling` | `+0x2C` | yalms → marker coordinate space |
+| `PlayerPinRotation` | `+0x30` | Character facing in minimap space, **in degrees** |
+| `PlayerConeRotation` | `+0x34` | The view cone's rotation, degrees |
+| `X` / `Y` | `+0x20` / `+0x24` | Map offset in marker space (live: −857.47, −694.94) |
+| `Width` / `Height` | `+0x40` / `+0x42` | Map span in marker units (live: 88) |
+| `NorthLockedUp` | `+0x134C` | Map is pinned north-up. **Correct — verified true on a map that did not turn** |
 
-**Centre.** `PlayerPin`'s `AtkResNode.ScreenX/ScreenY` is the node's top-left
-after every UI transform, so the centre is that plus half the node's scaled
-size. Taking it from the node rather than reconstructing the addon rectangle
-means HUD scale, HUD layout position and window movement are all already
-accounted for.
+Live values, read 2026-08-11 from a running client via the brain's
+`/debug/structread` (see CLAUDE.md §3):
 
-**Scale.** `MarkerPositionScaling * addon scale`. This is the same number the
-game uses to place its own minimap markers, so distances match the map exactly
-at every zoom level.
+| | |
+|---|---|
+| `_NaviMap` addon | `0x1AEB74960D0`, position (2387, 24), size 218×218, scale **0.8** |
+| `MapBase` / `Mask` node | ScreenX/Y (2403.80, 38.40), size **176×176**, rotation **0**, origin (88, 88) |
+| `PlayerPin` node | ScreenX/Y (2484.06, 93.62), size 32×32, rotation **−4.9218 rad**, origin (16, 16) |
+| `MarkerPositionScaling` | 0.5 |
+| `Atk2DNaviMap.Width` | 88 |
 
-**Rotation.** Screen Y grows downward and so does world +Z when the map is
-north-up, so with a north-up minimap the offset is simply `(dx, dz) * scale` —
-no negation, no swap. This is the default and the case verified against a real
-client.
+**Centre — use `MapBase`, never `PlayerPin`.**
 
-With the map free to turn, it turns so the direction the **character** faces
-points up. Writing the character's facing as r and using the plugin's
-established convention (`facing = (sin r, cos r)`, from
-`EnemyVisionTool.FacingVector`), we need the rotation phi with
+```
+centre = MapBase.ScreenX + MapBase.Width  / 2 * addonScale
+         MapBase.ScreenY + MapBase.Height / 2 * addonScale
+       = (2474.20, 108.80)
+```
+
+`AtkResNode.ScreenX/ScreenY` is where the node's local (0,0) lands **after** its
+transform. `MapBase` has rotation 0, so the axis-aligned half-size term is valid
+for it. The player pin does not: it rotates with the character, and the same
+formula on it gives (2496.86, 106.42) — 23px off, and *orbiting* as the
+character turns. Undoing the rotation properly,
+
+```
+centre = screen + scale * R(rotation) . origin
+```
+
+reproduces (2474.20, 108.80) from the pin exactly, which is how the fault was
+proved. Anchoring to the unrotating node is simpler and needs no maths.
+
+Because this is a node's post-transform screen position, **HUD layout position,
+HUD scale and addon scale are all already applied** — moving the minimap in the
+HUD editor needs no configuration at all.
+
+**Scale.**
+
+```
+scale = MarkerPositionScaling * (MapBase.Width / Atk2DNaviMap.Width) * addonScale
+      = 0.5 * (176 / 88) * 0.8
+      = 0.8 px per yalm      // ~78 yalm visible radius
+```
+
+The `Width`→node-width ratio of 2 is the one term never confirmed against a
+second source. An attempt to measure it from the game's own `_naviMapMarkers`
+failed because every marker sampled was edge-clamped — non-zero node rotation
+and a screen delta unrelated to its map delta. **Scan the full 101-entry array
+for one with `Rotation == 0` and a small map delta first.**
+
+**Rotation.** Screen Y grows downward and so does world +Z on a north-up map, so
+with `NorthLockedUp` the offset is simply `(dx, dz) * scale` — no negation, no
+swap.
+
+When the map does turn, it turns so the direction the **character** faces points
+up — not the camera. Writing the facing as r, with this plugin's convention
+`facing = (sin r, cos r)`:
 
 ```
 R(phi) . (sin r, cos r) = (sin(r - phi), cos(r - phi)) = (0, -1)
-=> r - phi = pi
 => phi = r - pi
 ```
 
-Check: r = 0 is the character facing +Z. Something at +dz (in front) should
-appear above the player. `R(-pi).(0, dz) = (0, -dz)` — up. ✓
+Confirmed live: player at −135°, `PlayerPinRotation` 45° — exactly `r + 180`,
+the same angle as `r − pi`.
 
-### Two things this got wrong, and why
+## What was never solved
 
-**It used the camera, not the character.** The first version took the angle from
-`Camera.DirH`. Swinging the camera around a stationary character then rotated
-every dot while the minimap itself stayed put — reported as "as I turn my
-camera, the dots shift around". The minimap follows the character.
+With the centre fixed, the dots still rotated slightly around their true
+positions. The centre is provably stable (`MapBase` rotation 0) and applied
+rotation is 0 on a north-locked map, so it is neither of those. The untested
+lead: **`Atk2DNaviMap.X`/`Y`** is the map's own offset in marker space, and the
+game may place its markers relative to that rather than assuming the player sits
+exactly at the node centre. If it lags or interpolates, dots anchored to the
+true player position drift against the terrain.
 
-**`NorthLockedUp` is not trusted.** On 2026-08-11, four screenshots with the
-character facing north, south, east and west showed a minimap whose terrain did
-not move at all — plainly north-up — while `Atk2DNaviMap.NorthLockedUp`
-(`+0x134C`) read false and a rotation was applied anyway. Either the field means
-something other than its name, or it is not the whole story.
-
-So the plugin **asks** instead: "My minimap turns with my character", off by
-default. An auto-detection that cannot be validated is worse than a setting.
-The field's value is still shown in the Orientation table, labelled
-`(not trusted)`, so the discrepancy stays visible.
-
-This is the same trap as the Glamour Dresser `GlamourDresserItemSetUnlockBits`
-polarity noted in `devPlugins/CLAUDE.md`: a plausibly-named boolean whose
-meaning must be verified empirically before anything is gated on it.
-
-### Settling it properly
-
-`Atk2DNaviMap.PlayerPinRotation` is the rotation the game applies to the player
-arrow, which is the character's facing expressed in minimap space. That makes
-
-```
-map rotation = PlayerPinRotation - characterFacing
-```
-
-fall out for both kinds of minimap with no boolean involved at all: north-up
-gives a constant, character-up gives -facing. The unknown is the constant offset
-and sign between `AtkResNode.Rotation`'s convention and the world angle.
-
-While the Orientation panel is open the tool logs, once a second at
-**Information** (not Debug — Dalamud filters Debug out, see BROKEN 008):
-
-```
-[MinimapRadar] facing= pin= cone= dirH= northLocked= rotatesSetting= applied= scale= centre= r=
-```
-
-Two samples at known facings resolve the constant and the sign. Once confirmed,
-the setting can go away and this can decide for itself.
-
-## Colours
-
-| Colour | Meaning |
-|--------|---------|
-| Red | Can detect you right now. Only claimed for mobs with a confirmed shape |
-| Amber | Can aggro, range not settled |
-| Grey | Never measured |
-| Dim grey | Cannot aggro you at all (off by default) |
-
-A dot is a *position*, so it is drawn for any tracked mob whether or not its
-range is confirmed. Only the red state is a claim about detection, and that is
-gated on confirmed data — which is why the radar behaves the same in the public
-build as in the dev one, unlike the ground shapes.
-
-Mobs beyond the minimap's edge are pinned to the rim as small hollow rings, so
-"something is out that way" is still answerable without implying it is at the
-edge.
+That is where to start.

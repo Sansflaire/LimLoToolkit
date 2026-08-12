@@ -1,7 +1,8 @@
 # 012 — Minimap dots offset from the player, and orbiting as he turned
 
-**Status:** Largely fixed in 0.22.1.0. A small residual rotation remains — see
-"Still open" below.
+**Status:** Centre fixed in 0.22.1.0. **The whole feature was then removed in
+0.23.0.0** at the user's request — the residual rotation below was never solved.
+The verified transform is preserved in `docs/minimap-radar.md`.
 **Found:** 2026-08-11 — "minimap radar is very inaccurate, as I turn my camera
 the minimap dots shift around", then "it's like the enemy dots are based off of
 a location for the player that is offset from my actual location".
