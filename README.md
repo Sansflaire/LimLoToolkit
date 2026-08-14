@@ -34,6 +34,7 @@ Settings — it then disappears from the sidebar and stops running.
 
 | Enemy Vision | Draws each nearby enemy's detection area on the ground — a wedge in front of enemies that only see forwards, a full circle around ones that detect in all directions — and turns it red when you are standing inside it. Includes a training mode that measures each mob's real range by watching pulls. Occult Crescent only. |
 | Mob Viewer | Browse every mob with confirmed detection values: how it detects you, its range and cone, level, HP, hitbox, where it lives, and the underlying game data. Any mob can be hidden. |
+| Actually Mute | Muting someone in-game does not silence them — the game still prints their name and swaps the text for "(This message is from a muted character.)". This deletes that line completely, so a muted character leaves no trace in chat. Only lines whose entire text is that placeholder are removed; nothing else in chat is touched and your mute list is never modified. |
 
 **World overlays** (Settings → World Overlays)
 

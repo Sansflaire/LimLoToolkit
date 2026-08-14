@@ -38,6 +38,7 @@ public sealed class ToolRegistry : IDisposable
         Register(new EnemyVisionTool(config, store, new AggroTrainer(store, config)));
 #endif
         Register(new MobViewerTool(config, store));
+        Register(new ActuallyMuteTool(config));
 
         Register(new CharacterInfoTool());
         Register(new EorzeaClockTool());

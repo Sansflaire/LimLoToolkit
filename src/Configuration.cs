@@ -65,6 +65,20 @@ public sealed class Configuration : IPluginConfiguration
     /// </summary>
     public float AutoOpenDistance { get; set; } = 2.0f;
 
+    // --- Actually Mute ---
+
+    /// <summary>
+    /// Delete the "(This message is from a muted character.)" placeholder from
+    /// chat entirely, rather than letting the game print the muted character's
+    /// name next to it.
+    ///
+    /// On by default: it is the whole point of the tool, and the tool's own
+    /// on/off switch in settings is the outer gate for anyone who wants the
+    /// game's stock behaviour back. It only ever removes lines whose text is
+    /// exactly the placeholder — it does not filter chat generally.
+    /// </summary>
+    public bool SuppressMutedCharacterMessages { get; set; } = true;
+
     // --- Enemy Vision (Occult Crescent) ---
 
     /// <summary>Draw the detection shape for sight-based (cone) enemies.</summary>
