@@ -185,7 +185,9 @@ public sealed class ConfigWindow : Window, IDisposable
 
         ImGui.Spacing();
         UiHelpers.SectionHeader("Tools");
-        UiHelpers.Muted("Switch a tool off to hide it from the sidebar and stop it from running.");
+        UiHelpers.Muted(
+            "Everything starts switched off. Turn a tool on to have it appear in the sidebar and "
+            + "start running; switch it off again to stop it completely.");
         ImGui.Spacing();
 
         foreach (var tool in _tools.All)

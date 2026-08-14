@@ -56,13 +56,23 @@ public sealed class Plugin : IDalamudPlugin
     {
         _instance = this;
 
-        _config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        var stored = PluginInterface.GetPluginConfig() as Configuration;
 
-        // Must run before anything reads a setting, and must be saved straight
-        // away — otherwise a migration re-runs on every launch and a user who
-        // deliberately changed the value back has it taken off them each time.
-        if (_config.Migrate())
+        _config = stored ?? Configuration.CreateFirstRun();
+
+        if (stored is null)
         {
+            // Written straight away so the schema version is on disk. A first
+            // run is deliberately NOT migrated — see Configuration.CreateFirstRun.
+            PluginInterface.SavePluginConfig(_config);
+            Log.Information("No config found — starting fresh with every tool switched off.");
+        }
+        else if (_config.Migrate())
+        {
+            // Must run before anything reads a setting, and must be saved
+            // straight away — otherwise a migration re-runs on every launch and
+            // a user who deliberately changed the value back has it taken off
+            // them each time.
             PluginInterface.SavePluginConfig(_config);
             Log.Information($"Config migrated to v{Configuration.CurrentVersion}.");
         }

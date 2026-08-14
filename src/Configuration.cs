@@ -21,9 +21,30 @@ public sealed class Configuration : IPluginConfiguration
     /// into it — see <see cref="Migrate"/>. A new field alone does not need a
     /// bump; a missing property already picks up its initializer.
     /// </summary>
-    public const int CurrentVersion = 4;
+    public const int CurrentVersion = 5;
 
     public int Version { get; set; } = 1;
+
+    /// <summary>
+    /// Every tool id that existed when tools stopped defaulting to on, so the
+    /// v4 -> v5 migration can pin them for people who already had them running.
+    ///
+    /// **FROZEN. Do not add a new tool's id here.** This is a snapshot of the
+    /// past, not a registry — a tool written after v5 must get the new default
+    /// (off) rather than being switched on behind the user's back. Nothing but
+    /// <see cref="Migrate"/> may read it; live code asks
+    /// <see cref="Tools.ToolRegistry"/> what exists.
+    /// </summary>
+    private static readonly string[] ToolsThatDefaultedToOn =
+    [
+        "occult-coffer-lines",
+        "occult-enemy-vision",
+        "mob-viewer",
+        "actually-mute",
+        "character-info",
+        "eorzea-clock",
+        "about",
+    ];
 
     /// <summary>Open the toolkit window automatically when the plugin loads.</summary>
     public bool OpenOnLoad { get; set; } = false;
@@ -278,12 +299,46 @@ public sealed class Configuration : IPluginConfiguration
         if (Version < 4 && MathF.Abs(EnemyVisionRadius - 12.0f) < 0.001f)
             EnemyVisionRadius = 8.0f;
 
+        // v4 -> v5: tools now default to OFF, so a fresh install starts empty
+        // and every tool is something the user chose. That flips the meaning of
+        // a MISSING key in EnabledTools from "on" to "off", which would silently
+        // switch off every tool anyone is currently using — so before the new
+        // rule takes effect, write an explicit `true` for each tool that was on
+        // under the old one.
+        //
+        // Only missing keys are filled in. A tool the user deliberately switched
+        // off has `false` stored and is left alone.
+        //
+        // This runs on files loaded from disk only. A first run never gets here
+        // — see CreateFirstRun — because applying it would hand a new user every
+        // tool switched on, which is the opposite of the point.
+        if (Version < 5)
+        {
+            foreach (var id in ToolsThatDefaultedToOn)
+                EnabledTools.TryAdd(id, true);
+        }
+
         Version = CurrentVersion;
         return true;
     }
 
+    /// <summary>
+    /// The configuration someone gets the very first time they run the plugin.
+    ///
+    /// Stamped with the current schema version so <see cref="Migrate"/> does
+    /// nothing to it. Migrations exist to carry an OLD file forward; running
+    /// them over a new one hands a first-time user somebody else's history, and
+    /// the v4 -> v5 step in particular would switch every tool on.
+    /// </summary>
+    public static Configuration CreateFirstRun() => new() { Version = CurrentVersion };
+
+    /// <summary>
+    /// Tools default to OFF. A fresh install shows an empty sidebar and the user
+    /// picks what they want in Settings, so nothing runs that was not asked for.
+    /// Anyone who already had a tool on keeps it — see the v4 -> v5 migration.
+    /// </summary>
     public bool IsToolEnabled(string id) =>
-        !EnabledTools.TryGetValue(id, out var enabled) || enabled;
+        EnabledTools.TryGetValue(id, out var enabled) && enabled;
 
     public void SetToolEnabled(string id, bool enabled) =>
         EnabledTools[id] = enabled;

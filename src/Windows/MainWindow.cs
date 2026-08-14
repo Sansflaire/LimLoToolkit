@@ -53,7 +53,9 @@ public sealed class MainWindow : Window, IDisposable
 
         if (enabled.Count == 0)
         {
-            UiHelpers.Muted("Every tool is switched off. Turn one back on in Settings.");
+            UiHelpers.Muted(
+                "No tools are switched on. Every tool ships off, so nothing runs until you ask "
+                + "for it — pick the ones you want in Settings and they appear here.");
             ImGui.Spacing();
             if (ImGui.Button("Open Settings"))
                 _openSettings();

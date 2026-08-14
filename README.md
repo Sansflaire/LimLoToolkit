@@ -21,8 +21,13 @@ Then find **LimLo Toolkit** in `/xlplugins` and install it.
 | `/limlo` | Toggle the toolkit window |
 | `/limlocfg` | Open settings |
 
-Pick a tool from the sidebar. Any tool you do not want can be switched off in
-Settings — it then disappears from the sidebar and stops running.
+**Every tool starts switched off.** A fresh install opens on an empty window —
+go to Settings, turn on the tools you want, and they appear in the sidebar.
+Nothing runs until you ask for it. Switching a tool off again removes it from
+the sidebar and stops it completely.
+
+If you already have the plugin, this changes nothing for you: whatever you had
+on stays on.
 
 ## Tools
 
