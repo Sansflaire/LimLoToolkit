@@ -16,7 +16,7 @@ It was not. It was rejecting input for reasons it never mentioned.
 Two independent causes, both silence:
 
 1. **The ignore list swallowed pulls.** `EnemyVisionTool` skipped ignored mobs
-   with a bare `continue` before the trainer ever saw them. Trist had 22 mob
+   with a bare `continue` before the trainer ever saw them. Sansflaire had 22 mob
    types ignored via the one-click Ignore button, and a pull from any of them
    produced no message whatsoever — identical to the trainer being broken.
 

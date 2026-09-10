@@ -18,7 +18,7 @@ arbitrarily — 3.5y here, 12.8y next door — and the outline came out as a
 staircase. Slices proven safe to the hitbox produced gaps, breaking the outline
 into disconnected fragments.
 
-The deeper mistake was modelling. Trist had already stated the domain rule:
+The deeper mistake was modelling. Sansflaire had already stated the domain rule:
 **the game implements exactly two detection shapes, cone and radius.** Drawing a
 free-form outline was inventing a third that does not exist, so no amount of
 smoothing would have made it correct — it was answering the wrong question.

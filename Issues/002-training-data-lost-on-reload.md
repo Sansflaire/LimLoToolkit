@@ -5,7 +5,7 @@
 
 ## Symptom
 
-Trist collected aggro measurements, the plugin rebuilt and hot-reloaded, and
+Sansflaire collected aggro measurements, the plugin rebuilt and hot-reloaded, and
 every sample was gone. Reported as "You rebuilt and lost the data I just
 collected. What the fuck, why?" — entirely justified, since each sample costs a
 deliberate clean pull to produce.

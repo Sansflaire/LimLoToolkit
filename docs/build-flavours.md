@@ -6,7 +6,7 @@ LimLoToolkit ships as two different binaries from one source tree.
 |---|---|---|
 | Configuration | `Debug` | `Release` |
 | Built by | `dotnet build -c Debug`, copied into `devPlugins/LimLoToolkit/` | CI, on every push to `main` |
-| Reaches | Trist's machine | the `pluginmaster.json` link his friends install from |
+| Reaches | Sansflaire's machine | the `pluginmaster.json` link his friends install from |
 | Trainer compiled in | yes | **no** |
 | Recording code compiled in | yes | **no** |
 | Mobs shown | everything measured or seen | only mobs with **confirmed (locked)** values |
