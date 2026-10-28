@@ -112,6 +112,36 @@ public sealed class KeyboundBrawlerTool : ITool
         DrawSettings();
     }
 
+    /// <summary>
+    /// The in-match window: Start/Stop, targeting and the sliders, shown by itself whenever the
+    /// minigame is on screen. The player can't open menus or type commands during a match, so
+    /// this is the only way to reach the controls then (Sansflaire, 2026-10-28).
+    ///
+    /// <para>It must never take the keyboard — every key the typer sends has to reach the game.
+    /// So: it doesn't grab focus when it appears, keyboard navigation is off, and the sliders
+    /// can't be Ctrl+clicked into text boxes.</para>
+    /// </summary>
+    public void DrawOverlay()
+    {
+        var s = _typer.Last;
+        if (!s.WordsVisible && !s.InputVisible) return;
+
+        const ImGuiWindowFlags Flags = ImGuiWindowFlags.AlwaysAutoResize
+                                     | ImGuiWindowFlags.NoFocusOnAppearing
+                                     | ImGuiWindowFlags.NoNavInputs
+                                     | ImGuiWindowFlags.NoCollapse;
+
+        if (ImGui.Begin("Keybound Brawler###limlo-keybound-play", Flags))
+        {
+            DrawControl();
+            if (_typer.HoldingFor != null)
+                UiHelpers.Colored(UiHelpers.Warn, $"Holding — {_typer.HoldingFor}");
+            ImGui.Spacing();
+            DrawTuning();
+        }
+        ImGui.End();
+    }
+
     private void DrawControl()
     {
         if (_conflict)
@@ -207,7 +237,21 @@ public sealed class KeyboundBrawlerTool : ITool
     private void DrawSettings()
     {
         UiHelpers.SectionHeader("Settings");
+        UiHelpers.Muted("These also appear in a small window of their own whenever a match is on screen.");
+        ImGui.Spacing();
 
+        DrawTuning();
+
+        ImGui.Spacing();
+        UiHelpers.Muted(
+            "Cursed Gaze and Dynamic Sensory Jammer punish text in the bar when they go off. While " +
+            "one is casting the tool finishes the word it is on, starts no word it can't finish in " +
+            "time, and presses nothing until the stun window has passed.");
+    }
+
+    /// <summary>Targeting and the three sliders — shared by the panel and the in-match window.</summary>
+    private void DrawTuning()
+    {
         if (ImGui.RadioButton("Safety", _config.KeyboundTargeting == KeyboundTargeting.Safety))
         {
             _config.KeyboundTargeting = KeyboundTargeting.Safety;
@@ -232,19 +276,15 @@ public sealed class KeyboundBrawlerTool : ITool
         UiHelpers.HelpMarker("Random spread added to every key delay.");
         IntSlider("Reaction", () => _config.KeyboundReactionMs, v => _config.KeyboundReactionMs = v, 0, 1500);
         UiHelpers.HelpMarker("Pause after picking a new word before its first key.");
-
-        ImGui.Spacing();
-        UiHelpers.Muted(
-            "Cursed Gaze and Dynamic Sensory Jammer punish text in the bar when they go off. While " +
-            "one is casting the tool finishes the word it is on, starts no word it can't finish in " +
-            "time, and presses nothing until the stun window has passed.");
     }
 
     private static void IntSlider(string label, Func<int> get, Action<int> set, int min, int max)
     {
         ImGui.SetNextItemWidth(200f);
         float v = Math.Clamp(get(), min, max);
-        if (ImGui.SliderFloat($"{label}###limlo-keybound-{label}", ref v, min, max, "%.0f ms"))
+        // NoInput: Ctrl+click would turn the slider into a text box, which takes the keyboard
+        // away from the game mid-match.
+        if (ImGui.SliderFloat($"{label}###limlo-keybound-{label}", ref v, min, max, "%.0f ms", ImGuiSliderFlags.NoInput))
         {
             set((int)MathF.Round(v));
             Plugin.SaveConfiguration();
