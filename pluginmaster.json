@@ -1,30 +1,33 @@
 [
-  {
-    "Author": "Sansflaire",
-    "Name": "LimLo Toolkit",
-    "InternalName": "LimLoToolkit",
-    "AssemblyVersion": "0.26.0.0",
-    "TestingAssemblyVersion": "0.26.0.0",
-    "Punchline": "A standalone box of small quality-of-life tools.",
-    "Description": "LimLoToolkit is a single window that collects small quality-of-life tools for the Occult Crescent and beyond. Coffer Lines draws a line from you to nearby bronze and silver treasure coffers, and can optionally target and open one once you walk up to it. Enemy Vision draws each nearby enemy's detection area on the ground - a wedge for enemies that only see in front, a circle for those that detect in all directions - and turns it red when you are standing inside. Alongside them sit a live character and zone readout and an Eorzea clock with the next weather window. Every tool can be switched on or off individually. The plugin is fully standalone - it needs no other plugins installed and talks to nothing outside the game.",
-    "RepoUrl": "https://github.com/Sansflaire/LimLoToolkit",
-    "Tags": [
-      "utility",
-      "quality-of-life",
-      "toolkit",
-      "information",
-      "occult crescent",
-      "treasure"
-    ],
-    "CategoryTags": [
-      "Utility"
-    ],
-    "DalamudApiLevel": 15,
-    "ApplicableVersion": "any",
-    "DownloadLinkInstall": "https://github.com/Sansflaire/LimLoToolkit/releases/latest/download/LimLoToolkit.zip",
-    "DownloadLinkUpdate": "https://github.com/Sansflaire/LimLoToolkit/releases/latest/download/LimLoToolkit.zip",
-    "DownloadLinkTesting": "https://github.com/Sansflaire/LimLoToolkit/releases/latest/download/LimLoToolkit.zip",
-    "IsHide": false,
-    "IsTestingExclusive": false
-  }
+    {
+        "Author": "Sansflaire",
+        "Name": "LimLo Toolkit",
+        "InternalName": "LimLoToolkit",
+        "AssemblyVersion": "0.26.0.0",
+        "TestingAssemblyVersion": "0.26.0.0",
+        "Punchline": "A standalone box of small quality-of-life tools.",
+        "Description": "LimLoToolkit is a single window that collects small quality-of-life tools for the Occult Crescent and beyond. Coffer Lines draws a line from you to nearby bronze and silver treasure coffers, and can optionally target and open one once you walk up to it. Enemy Vision draws each nearby enemy's detection area on the ground - a wedge for enemies that only see in front, a circle for those that detect in all directions - and turns it red when you are standing inside. Actually Mute deletes the \"(This message is from a muted character.)\" placeholder from chat entirely, so a character you have muted leaves no trace at all. Keybound Brawler plays the Gold Saucer typing minigame for you, one real key press at a time, and shows every player's score from the last match. Alongside them sit a live character and zone readout and an Eorzea clock with the next weather window. Every tool starts switched off - open Settings and turn on the ones you want, and nothing else runs. The plugin is fully standalone - it needs no other plugins installed and talks to nothing outside the game.",
+        "RepoUrl": "https://github.com/Sansflaire/LimLoToolkit",
+        "Tags": [
+            "utility",
+            "quality-of-life",
+            "toolkit",
+            "information",
+            "occult crescent",
+            "treasure",
+            "chat",
+            "mute",
+            "gold saucer"
+        ],
+        "CategoryTags": [
+            "Utility"
+        ],
+        "DalamudApiLevel": 15,
+        "ApplicableVersion": "any",
+        "DownloadLinkInstall": "https://github.com/Sansflaire/LimLoToolkit/releases/latest/download/LimLoToolkit.zip",
+        "DownloadLinkUpdate": "https://github.com/Sansflaire/LimLoToolkit/releases/latest/download/LimLoToolkit.zip",
+        "DownloadLinkTesting": "https://github.com/Sansflaire/LimLoToolkit/releases/latest/download/LimLoToolkit.zip",
+        "IsHide": false,
+        "IsTestingExclusive": false
+    }
 ]
