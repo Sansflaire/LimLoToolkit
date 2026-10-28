@@ -111,10 +111,6 @@ public sealed class KeyboundBrawlerTool : ITool
             "real key press at a time, submitting each word with Enter once the input bar shows all " +
             "of it. It never presses Esc (that quits the minigame).");
         ImGui.Spacing();
-        UiHelpers.ColoredWrapped(UiHelpers.Warn,
-            "This plays the minigame for you. Square Enix does not permit third-party automation — " +
-            "use it at your own risk.");
-        ImGui.Spacing();
 
         DrawControl();
         DrawResults();
