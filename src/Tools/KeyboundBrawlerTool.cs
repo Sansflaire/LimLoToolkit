@@ -1,0 +1,255 @@
+using System;
+using System.Linq;
+
+using Dalamud.Bindings.ImGui;
+
+namespace LimLoToolkit.Tools;
+
+/// <summary>
+/// Plays the Gold Saucer's Keybound Brawler typing minigame: reads the enemy words out of the
+/// KTGEWord addon and types them into KTGInput, one verified real key press at a time. See
+/// <see cref="KeyboundReader"/> for the addon map, <see cref="KeyboundTyper"/> for the typing
+/// loop, and <c>docs/keybound-brawler.md</c> for how every mechanic was established.
+///
+/// <para>Automation, so it follows CLAUDE.md §5: the tool ships off, and even switched on it
+/// only types after Start is pressed in its panel. The armed state is never saved — every load
+/// starts stopped.</para>
+/// </summary>
+public sealed class KeyboundBrawlerTool : ITool
+{
+    public string Id          => "keybound-brawler";
+    public string Name        => "Keybound Brawler";
+    public string Description => "Type the words in the Gold Saucer's Keybound Brawler minigame for you.";
+    public string Category    => "Toolkit";
+
+    /// <summary>The standalone plugin this tool was ported from. Both typing at once would fight.</summary>
+    private const string StandalonePlugin = "KeyboardBrawlerAutomation";
+
+    /// <summary>The results table is a memory read; twice a second is plenty.</summary>
+    private const int ScoreRefreshMs = 500;
+    /// <summary>
+    /// Keep reading results this long after the minigame leaves the screen — the game writes
+    /// them ~24 s after the match UI closes. Outside that window nothing is read.
+    /// </summary>
+    private const int ScoreWindowMs = 120_000;
+    /// <summary>A gap this long between ticks means the tool was switched off in between.</summary>
+    private const int TickGapMs = 1000;
+
+    private readonly Configuration _config;
+    private readonly KeyboundTyper _typer;
+    private readonly KeyboundScoreboard _scores;
+
+    private long _lastTickAt;
+    private long _minigameSeenAt = -ScoreWindowMs;
+    private long _nextScoreAt;
+    private bool _conflict;
+    private long _nextConflictCheckAt;
+
+    public KeyboundBrawlerTool(Configuration config)
+    {
+        _config = config;
+        _typer  = new KeyboundTyper(config);
+        _scores = new KeyboundScoreboard(Plugin.PluginInterface.GetPluginConfigDirectory());
+    }
+
+    public void OnFrameworkUpdate()
+    {
+        long now = Environment.TickCount64;
+
+        // The registry stops ticking a disabled tool, so a typer armed before the tool was
+        // switched off would come back armed. Coming back is a fresh start.
+        if (_lastTickAt != 0 && now - _lastTickAt > TickGapMs && _typer.Armed)
+            _typer.Disarm();
+        _lastTickAt = now;
+
+        if (now >= _nextConflictCheckAt)
+        {
+            _nextConflictCheckAt = now + 2000;
+            _conflict = StandaloneLoaded();
+            if (_conflict && _typer.Armed)
+                _typer.Disarm($"the {StandalonePlugin} plugin is also loaded — two typers would fight over the bar");
+        }
+
+        _typer.Tick();
+
+        var snap = _typer.Last;
+        if (snap.WordsVisible || snap.InputVisible) _minigameSeenAt = now;
+        if (now - _minigameSeenAt < ScoreWindowMs && now >= _nextScoreAt)
+        {
+            _nextScoreAt = now + ScoreRefreshMs;
+            _scores.Refresh(_typer.WordsSubmitted);
+        }
+    }
+
+    private static bool StandaloneLoaded()
+    {
+        try
+        {
+            return Plugin.PluginInterface.InstalledPlugins.Any(p => p.IsLoaded && p.InternalName == StandalonePlugin);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public void Draw()
+    {
+        UiHelpers.SectionHeader("Keybound Brawler");
+        UiHelpers.Muted(
+            "Reads the enemy words in the Gold Saucer's Keybound Brawler and types them for you, one " +
+            "real key press at a time, submitting each word with Enter once the input bar shows all " +
+            "of it. It never presses Esc (that quits the minigame).");
+        ImGui.Spacing();
+        UiHelpers.ColoredWrapped(UiHelpers.Warn,
+            "This plays the minigame for you. Square Enix does not permit third-party automation — " +
+            "use it at your own risk.");
+        ImGui.Spacing();
+
+        DrawControl();
+        DrawResults();
+        DrawLive();
+        DrawSettings();
+    }
+
+    private void DrawControl()
+    {
+        if (_conflict)
+        {
+            UiHelpers.ColoredWrapped(UiHelpers.Bad,
+                $"The {StandalonePlugin} plugin is loaded. It does the same job, and two typers would " +
+                "fight over the input bar — disable one of them.");
+            return;
+        }
+
+        if (ImGui.Button(_typer.Armed ? "Stop" : "Start typing"))
+        {
+            if (_typer.Armed) _typer.Disarm();
+            else _typer.Arm();
+        }
+        ImGui.SameLine();
+        UiHelpers.Colored(_typer.Armed ? (_typer.Last.InPlay ? UiHelpers.Good : UiHelpers.Warn) : UiHelpers.Dim,
+            !_typer.Armed ? "Stopped" : _typer.Last.InPlay ? "Typing" : "Armed — waiting for a round");
+        UiHelpers.HelpMarker(
+            "Start before or during a match. It types only while a round is open, and stops itself " +
+            "if keys stop reaching the input bar. Not saved — every load starts stopped.");
+
+        if (_typer.LastError is { } err)
+            UiHelpers.ColoredWrapped(UiHelpers.Bad, $"Last stop: {err}");
+        ImGui.Spacing();
+    }
+
+    private void DrawResults()
+    {
+        var board = _scores.Last;
+        if (board.Count == 0) return;
+
+        UiHelpers.SectionHeader("Last match results");
+        UiHelpers.Muted(
+            "The game only shows you your own score. Everyone's is known once a match ends, and is " +
+            "shown here until the next match finishes.");
+        ImGui.Spacing();
+
+        if (ImGui.BeginTable("##limlo-keybound-scores", 2, ImGuiTableFlags.SizingFixedFit))
+        {
+            int rank = 0;
+            foreach (var e in board)
+            {
+                rank++;
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                UiHelpers.Colored(e.IsMe ? UiHelpers.Accent : UiHelpers.Dim, $"#{rank}  {e.Name}");
+                ImGui.TableNextColumn();
+                UiHelpers.Colored(e.IsMe ? UiHelpers.Accent : UiHelpers.Dim, e.Score.ToString("N0"));
+            }
+            ImGui.EndTable();
+        }
+        UiHelpers.HelpMarker(
+            $"Each finished match is saved to {_scores.HistoryPath} — the newest " +
+            $"{KeyboundScoreboard.MaxMatches} are kept ({_scores.SavedThisSession} saved this session).");
+        ImGui.Spacing();
+    }
+
+    private void DrawLive()
+    {
+        var s = _typer.Last;
+        UiHelpers.SectionHeader("Status");
+
+        if (!s.WordsVisible && !s.InputVisible)
+        {
+            UiHelpers.Muted("Not in a match. The words and input bar only exist inside Keybound Brawler.");
+        }
+        else if (ImGui.BeginTable("##limlo-keybound-live", 2, ImGuiTableFlags.SizingFixedFit))
+        {
+            UiHelpers.Row("Round", s.InputArmed ? "open" : $"countdown {s.Countdown}");
+            UiHelpers.Row("Input bar", s.Typed.Length == 0 ? "(empty)" : s.Typed);
+            UiHelpers.Row("Target", _typer.Target ?? "—");
+            if (s.MyScore >= 0) UiHelpers.Row("Your score", s.MyScore.ToString("N0"));
+            if (s.PartyHpMax > 0) UiHelpers.Row("Party HP", $"{s.PartyHp:N0} / {s.PartyHpMax:N0}");
+            UiHelpers.Row("Enemy casts", s.Casts.Count == 0 ? "none" : string.Join("  ·  ", s.Casts.Select(c => c.Name)));
+            if (_typer.HoldingFor != null) UiHelpers.Row("Holding", $"not typing — {_typer.HoldingFor}");
+            UiHelpers.Row("Words", s.Words.Count == 0 ? "none" : string.Join("  ·  ", s.Words.Select(w =>
+                w.Kind == PlateKind.Wall ? "[WALL] " + w.Text : w.IsCasting ? "[CAST] " + w.Text : w.Text)));
+            ImGui.EndTable();
+        }
+
+        if (ImGui.BeginTable("##limlo-keybound-stats", 2, ImGuiTableFlags.SizingFixedFit))
+        {
+            UiHelpers.Row("This session",
+                $"{_typer.WordsSubmitted} words · {_typer.CharsSent} keys · {_typer.BackspacesSent} backspaces · {_typer.EchoFailures} misses");
+            if (_typer.TextOnlyChars > 0)
+                UiHelpers.Row("Typed as text", $"{_typer.TextOnlyChars} (no key on your layout makes them)");
+            ImGui.EndTable();
+        }
+        ImGui.Spacing();
+    }
+
+    private void DrawSettings()
+    {
+        UiHelpers.SectionHeader("Settings");
+
+        if (ImGui.RadioButton("Safety", _config.KeyboundTargeting == KeyboundTargeting.Safety))
+        {
+            _config.KeyboundTargeting = KeyboundTargeting.Safety;
+            Plugin.SaveConfiguration();
+        }
+        UiHelpers.HelpMarker(
+            "Avoid damage: the wall prompt first, then enemies that are casting (interrupts them), " +
+            "then the closest enemy. The boss is last.");
+        ImGui.SameLine();
+        if (ImGui.RadioButton("Boss", _config.KeyboundTargeting == KeyboundTargeting.Boss))
+        {
+            _config.KeyboundTargeting = KeyboundTargeting.Boss;
+            Plugin.SaveConfiguration();
+        }
+        UiHelpers.HelpMarker("The primary target (the boss, in the boss stage) first, then the closest enemy.");
+
+        IntSlider("Key delay", () => _config.KeyboundCharDelayMs, v => _config.KeyboundCharDelayMs = v, 20, 400);
+        UiHelpers.HelpMarker(
+            "Time between keys. Each key waits for the bar to show it before the next is sent, so " +
+            "the real rate can only be slower than this, never faster.");
+        IntSlider("Jitter ±", () => _config.KeyboundJitterMs, v => _config.KeyboundJitterMs = v, 0, 150);
+        UiHelpers.HelpMarker("Random spread added to every key delay.");
+        IntSlider("Reaction", () => _config.KeyboundReactionMs, v => _config.KeyboundReactionMs = v, 0, 1500);
+        UiHelpers.HelpMarker("Pause after picking a new word before its first key.");
+
+        ImGui.Spacing();
+        UiHelpers.Muted(
+            "Cursed Gaze and Dynamic Sensory Jammer punish text in the bar when they go off. While " +
+            "one is casting the tool finishes the word it is on, starts no word it can't finish in " +
+            "time, and presses nothing until the stun window has passed.");
+    }
+
+    private static void IntSlider(string label, Func<int> get, Action<int> set, int min, int max)
+    {
+        ImGui.SetNextItemWidth(200f);
+        float v = Math.Clamp(get(), min, max);
+        if (ImGui.SliderFloat($"{label}###limlo-keybound-{label}", ref v, min, max, "%.0f ms"))
+        {
+            set((int)MathF.Round(v));
+            Plugin.SaveConfiguration();
+        }
+    }
+
+    public void Dispose() => _typer.Disarm();
+}

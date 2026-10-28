@@ -41,6 +41,8 @@ on stays on.
 | Mob Viewer | Browse every mob with confirmed detection values: how it detects you, its range and cone, level, HP, hitbox, where it lives, and the underlying game data. Any mob can be hidden. |
 | Actually Mute | Muting someone in-game does not silence them — the game still prints their name and swaps the text for "(This message is from a muted character.)". This deletes that line completely, so a muted character leaves no trace in chat. Only lines whose entire text is that placeholder are removed; nothing else in chat is touched and your mute list is never modified. |
 
+| Keybound Brawler | Plays the Gold Saucer's Keybound Brawler typing minigame for you: reads the enemy words and types them, one real key press at a time, submitting each with Enter. Goes for the wall prompt and casting enemies first, waits out the "don't type" casts so you don't get stunned, and shows everyone's score from the last match (the game only shows yours). Only types after you press Start in its panel. |
+
 **World overlays** (Settings → World Overlays)
 
 | Overlay | What it does |
@@ -53,6 +55,11 @@ on stays on.
 > for you once *you* have walked within about 2 yalms of it — it never moves
 > your character. Square Enix does not permit third-party automation, so enable
 > it at your own risk.
+
+> **Keybound Brawler plays the minigame for you.** It is off until you press
+> Start, never saved as on, and stops itself if its keys stop reaching the input
+> bar. Square Enix does not permit third-party automation — use it at your own
+> risk.
 
 > **Enemy Vision: the shape is exact, and so is every range you are shown.**
 > Whether an enemy detects in a cone or in all directions is read from the

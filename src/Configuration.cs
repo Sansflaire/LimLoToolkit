@@ -100,6 +100,21 @@ public sealed class Configuration : IPluginConfiguration
     /// </summary>
     public bool SuppressMutedCharacterMessages { get; set; } = true;
 
+    // --- Keybound Brawler ---
+    // Whether it is typing is deliberately NOT here: every load starts stopped.
+
+    /// <summary>Which plate the typer goes for first.</summary>
+    public Tools.KeyboundTargeting KeyboundTargeting { get; set; } = Tools.KeyboundTargeting.Safety;
+
+    /// <summary>Base delay between typed keys, in milliseconds.</summary>
+    public int KeyboundCharDelayMs { get; set; } = 90;
+
+    /// <summary>Random ± spread added to every key delay, in milliseconds.</summary>
+    public int KeyboundJitterMs { get; set; } = 30;
+
+    /// <summary>Pause after a new word is picked before its first key, in milliseconds.</summary>
+    public int KeyboundReactionMs { get; set; } = 250;
+
     // --- Enemy Vision (Occult Crescent) ---
 
     /// <summary>Draw the detection shape for sight-based (cone) enemies.</summary>

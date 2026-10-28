@@ -31,6 +31,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static ICondition              Condition       { get; private set; } = null!;
     [PluginService] internal static IChatGui                ChatGui         { get; private set; } = null!;
     [PluginService] internal static IGameGui                GameGui         { get; private set; } = null!;
+    [PluginService] internal static IPlayerState            PlayerState     { get; private set; } = null!;
 
     public const string DisplayName   = "LimLo Toolkit";
     public const string CommandMain   = "/limlo";

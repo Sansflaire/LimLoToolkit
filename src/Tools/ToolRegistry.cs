@@ -39,6 +39,7 @@ public sealed class ToolRegistry : IDisposable
 #endif
         Register(new MobViewerTool(config, store));
         Register(new ActuallyMuteTool(config));
+        Register(new KeyboundBrawlerTool(config));
 
         Register(new CharacterInfoTool());
         Register(new EorzeaClockTool());
