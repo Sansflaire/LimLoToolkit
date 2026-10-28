@@ -11,6 +11,14 @@ while that plugin is loaded — two typers would fight over the bar.
 
 Paths are NodeId chains: `7/16` means node 16 inside component node 7.
 
+## The match instance
+
+ContentFinderCondition **1095** "Keybound Brawler" (Gold Saucer) → TerritoryType **1359**.
+Verified 2026-10-28 from the game's sheet and live: the client entered 1359 at both match starts
+(16:34:26, 16:51:41) and returned to **1360** "Keybound Square" (the lobby) after "Duty Done".
+The in-match control window shows for the whole time the player is in 1359, because the
+minigame UI itself is hidden during the countdown and between stages.
+
 ## Addons
 
 | Addon | What the tool reads |

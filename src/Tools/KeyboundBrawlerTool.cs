@@ -35,6 +35,15 @@ public sealed class KeyboundBrawlerTool : ITool
     /// <summary>A gap this long between ticks means the tool was switched off in between.</summary>
     private const int TickGapMs = 1000;
 
+    /// <summary>
+    /// The match instance. <b>Verified</b> 2026-10-28: ContentFinderCondition 1095 "Keybound
+    /// Brawler" (Gold Saucer) has TerritoryType 1359, and the log showed the client entering 1359
+    /// at both match starts and returning to 1360 (Keybound Square, the lobby) after "Duty Done".
+    /// </summary>
+    private const ushort MatchTerritory = 1359;
+
+    private bool _inMatchInstance;
+
     private readonly Configuration _config;
     private readonly KeyboundTyper _typer;
     private readonly KeyboundScoreboard _scores;
@@ -71,6 +80,7 @@ public sealed class KeyboundBrawlerTool : ITool
         }
 
         _typer.Tick();
+        _inMatchInstance = Plugin.ClientState.TerritoryType == MatchTerritory;
 
         var snap = _typer.Last;
         if (snap.WordsVisible || snap.InputVisible) _minigameSeenAt = now;
@@ -113,9 +123,10 @@ public sealed class KeyboundBrawlerTool : ITool
     }
 
     /// <summary>
-    /// The in-match window: Start/Stop, targeting and the sliders, shown by itself whenever the
-    /// minigame is on screen. The player can't open menus or type commands during a match, so
-    /// this is the only way to reach the controls then (Sansflaire, 2026-10-28).
+    /// The in-match window: Start/Stop, targeting and the sliders, shown for the whole time the
+    /// player is in the match instance — including the countdown and the 10+ s gaps between
+    /// stages, when the minigame UI is hidden. The player can't open menus or type commands
+    /// during a match, so this is the only way to reach the controls then (Sansflaire, 2026-10-28).
     ///
     /// <para>It must never take the keyboard — every key the typer sends has to reach the game.
     /// So: it doesn't grab focus when it appears, keyboard navigation is off, and the sliders
@@ -124,7 +135,7 @@ public sealed class KeyboundBrawlerTool : ITool
     public void DrawOverlay()
     {
         var s = _typer.Last;
-        if (!s.WordsVisible && !s.InputVisible) return;
+        if (!_inMatchInstance && !s.WordsVisible && !s.InputVisible) return;
 
         const ImGuiWindowFlags Flags = ImGuiWindowFlags.AlwaysAutoResize
                                      | ImGuiWindowFlags.NoFocusOnAppearing
@@ -237,7 +248,7 @@ public sealed class KeyboundBrawlerTool : ITool
     private void DrawSettings()
     {
         UiHelpers.SectionHeader("Settings");
-        UiHelpers.Muted("These also appear in a small window of their own whenever a match is on screen.");
+        UiHelpers.Muted("These also appear in a small window of their own for the whole time you are in a match.");
         ImGui.Spacing();
 
         DrawTuning();
