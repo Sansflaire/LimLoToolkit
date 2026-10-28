@@ -88,7 +88,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandMain, new CommandInfo(OnMainCommand)
         {
-            HelpMessage = $"Toggle the {DisplayName} window.",
+            HelpMessage = $"Toggle the {DisplayName} window. {CommandMain} brawl [on|off] starts or stops Keybound Brawler typing.",
         });
         CommandManager.AddHandler(CommandConfig, new CommandInfo(OnConfigCommand)
         {
@@ -130,9 +130,21 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnMainCommand(string command, string args)
     {
-        if (args.Trim().Equals("config", StringComparison.OrdinalIgnoreCase))
+        var parts = args.Trim().ToLowerInvariant().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        var verb  = parts.Length > 0 ? parts[0] : string.Empty;
+
+        if (verb == "config")
         {
             OpenConfigUi();
+            return;
+        }
+
+        // Start/stop Keybound Brawler typing without opening the window — the player can't
+        // reach menus once a match is running, so this is the macro-friendly route.
+        if (verb == "brawl")
+        {
+            if (_tools.FindById("keybound-brawler") is KeyboundBrawlerTool brawl)
+                brawl.RunCommand(parts.Length > 1 ? parts[1].Trim() : string.Empty);
             return;
         }
 

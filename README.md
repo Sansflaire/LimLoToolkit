@@ -20,6 +20,7 @@ Then find **LimLo Toolkit** in `/xlplugins` and install it.
 |---------|--------------|
 | `/limlo` | Toggle the toolkit window |
 | `/limlocfg` | Open settings |
+| `/limlo brawl [on\|off]` | Start or stop Keybound Brawler typing; no argument toggles. Works from a macro |
 
 **Every tool starts switched off.** A fresh install opens on an empty window —
 go to Settings, turn on the tools you want, and they appear in the sidebar.
@@ -41,7 +42,7 @@ on stays on.
 | Mob Viewer | Browse every mob with confirmed detection values: how it detects you, its range and cone, level, HP, hitbox, where it lives, and the underlying game data. Any mob can be hidden. |
 | Actually Mute | Muting someone in-game does not silence them — the game still prints their name and swaps the text for "(This message is from a muted character.)". This deletes that line completely, so a muted character leaves no trace in chat. Only lines whose entire text is that placeholder are removed; nothing else in chat is touched and your mute list is never modified. |
 
-| Keybound Brawler | Plays the Gold Saucer's Keybound Brawler typing minigame for you: reads the enemy words and types them, one real key press at a time, submitting each with Enter. Goes for the wall prompt and casting enemies first, waits out the "don't type" casts so you don't get stunned, and shows everyone's score from the last match (the game only shows yours). Only types after you press Start in its panel. |
+| Keybound Brawler | Plays the Gold Saucer's Keybound Brawler typing minigame for you: reads the enemy words and types them, one real key press at a time, submitting each with Enter. Goes for the wall prompt and casting enemies first, waits out the "don't type" casts so you don't get stunned, and shows everyone's score from the last match (the game only shows yours). Only types after you press Start (in its panel, in the small window that appears during a match, or with `/limlo brawl`), or on entering a match if you switch on "Always enable when minigame starts". |
 
 **World overlays** (Settings → World Overlays)
 
@@ -57,8 +58,8 @@ on stays on.
 > it at your own risk.
 
 > **Keybound Brawler plays the minigame for you.** It is off until you press
-> Start, never saved as on, and stops itself if its keys stop reaching the input
-> bar. Square Enix does not permit third-party automation — use it at your own
+> Start (or opt into auto-start on entering a match), and stops itself if its
+> keys stop reaching the input bar. Square Enix does not permit third-party automation — use it at your own
 > risk.
 
 > **Enemy Vision: the shape is exact, and so is every range you are shown.**

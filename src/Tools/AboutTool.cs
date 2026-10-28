@@ -28,6 +28,7 @@ public sealed class AboutTool : ITool
         {
             UiHelpers.Row(Plugin.CommandMain,   "Toggle the toolkit window");
             UiHelpers.Row(Plugin.CommandConfig, "Open settings");
+            UiHelpers.Row($"{Plugin.CommandMain} brawl [on|off]", "Start or stop Keybound Brawler typing (no argument toggles)");
             ImGui.EndTable();
         }
 

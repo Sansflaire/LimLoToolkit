@@ -103,6 +103,12 @@ public sealed class Configuration : IPluginConfiguration
     // --- Keybound Brawler ---
     // Whether it is typing is deliberately NOT here: every load starts stopped.
 
+    /// <summary>
+    /// Start typing automatically every time the player enters a match, whatever state the
+    /// typer was left in. Off by default — this is automation and the user opts in.
+    /// </summary>
+    public bool KeyboundAutoStart { get; set; } = false;
+
     /// <summary>Which plate the typer goes for first.</summary>
     public Tools.KeyboundTargeting KeyboundTargeting { get; set; } = Tools.KeyboundTargeting.Safety;
 

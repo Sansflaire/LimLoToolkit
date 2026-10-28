@@ -12,8 +12,9 @@ namespace LimLoToolkit.Tools;
 /// loop, and <c>docs/keybound-brawler.md</c> for how every mechanic was established.
 ///
 /// <para>Automation, so it follows CLAUDE.md §5: the tool ships off, and even switched on it
-/// only types after Start is pressed in its panel. The armed state is never saved — every load
-/// starts stopped.</para>
+/// only types after Start (panel, in-match window or <c>/limlo brawl</c>) — or on entering a
+/// match when the user has opted into <see cref="Configuration.KeyboundAutoStart"/>. The armed
+/// state itself is never saved.</para>
 /// </summary>
 public sealed class KeyboundBrawlerTool : ITool
 {
@@ -79,8 +80,23 @@ public sealed class KeyboundBrawlerTool : ITool
                 _typer.Disarm($"the {StandalonePlugin} plugin is also loaded — two typers would fight over the bar");
         }
 
-        _typer.Tick();
+        bool wasInMatch = _inMatchInstance;
         _inMatchInstance = Plugin.ClientState.TerritoryType == MatchTerritory;
+
+        // "Always enable when minigame starts": arm on the way IN to the match instance, so a
+        // Stop pressed during the match still sticks until the next one.
+        if (_inMatchInstance && !wasInMatch && _config.KeyboundAutoStart && !_typer.Armed)
+        {
+            if (_conflict)
+                Plugin.ChatGui.PrintError($"[LimLo] {Name}: not auto-starting — the {StandalonePlugin} plugin is also loaded.");
+            else
+            {
+                _typer.Arm();
+                Plugin.ChatGui.Print($"[LimLo] {Name}: auto-started — typing begins when the round opens.");
+            }
+        }
+
+        _typer.Tick();
 
         var snap = _typer.Last;
         if (snap.WordsVisible || snap.InputVisible) _minigameSeenAt = now;
@@ -89,6 +105,46 @@ public sealed class KeyboundBrawlerTool : ITool
             _nextScoreAt = now + ScoreRefreshMs;
             _scores.Refresh(_typer.WordsSubmitted);
         }
+    }
+
+    /// <summary>
+    /// <c>/limlo brawl [on|off]</c> — start or stop typing from chat or a macro. No argument
+    /// toggles. Prints what happened, so a macro press is never silent.
+    /// </summary>
+    public void RunCommand(string arg)
+    {
+        if (!_config.IsToolEnabled(Id))
+        {
+            Plugin.ChatGui.PrintError($"[LimLo] {Name} is switched off — turn it on in {Plugin.CommandConfig} first.");
+            return;
+        }
+
+        bool? requested = arg switch
+        {
+            "on"  => true,
+            "off" => false,
+            ""    => !_typer.Armed,
+            _     => null,
+        };
+        if (requested is not { } on)
+        {
+            Plugin.ChatGui.PrintError($"[LimLo] Usage: {Plugin.CommandMain} brawl [on|off]");
+            return;
+        }
+
+        if (!on)
+        {
+            _typer.Disarm();
+            Plugin.ChatGui.Print($"[LimLo] {Name}: stopped.");
+            return;
+        }
+        if (StandaloneLoaded())
+        {
+            Plugin.ChatGui.PrintError($"[LimLo] {Name}: not starting — the {StandalonePlugin} plugin is also loaded.");
+            return;
+        }
+        if (!_typer.Armed) _typer.Arm();
+        Plugin.ChatGui.Print($"[LimLo] {Name}: typing — starts when a round opens.");
     }
 
     private static bool StandaloneLoaded()
@@ -169,7 +225,8 @@ public sealed class KeyboundBrawlerTool : ITool
             !_typer.Armed ? "Stopped" : _typer.Last.InPlay ? "Typing" : "Armed — waiting for a round");
         UiHelpers.HelpMarker(
             "Start before or during a match. It types only while a round is open, and stops itself " +
-            "if keys stop reaching the input bar. Not saved — every load starts stopped.");
+            "if keys stop reaching the input bar. Not saved — every load starts stopped, unless " +
+            "\"Always enable when minigame starts\" is on.");
 
         if (_typer.LastError is { } err)
             UiHelpers.ColoredWrapped(UiHelpers.Bad, $"Last stop: {err}");
@@ -259,6 +316,16 @@ public sealed class KeyboundBrawlerTool : ITool
     /// <summary>Targeting and the three sliders — shared by the panel and the in-match window.</summary>
     private void DrawTuning()
     {
+        var auto = _config.KeyboundAutoStart;
+        if (ImGui.Checkbox("Always enable when minigame starts###limlo-keybound-auto", ref auto))
+        {
+            _config.KeyboundAutoStart = auto;
+            Plugin.SaveConfiguration();
+        }
+        UiHelpers.HelpMarker(
+            "Starts typing every time you enter a Keybound Brawler match, whether or not you left " +
+            "it on. Pressing Stop during a match still stops it until the next match.");
+
         if (ImGui.RadioButton("Safety", _config.KeyboundTargeting == KeyboundTargeting.Safety))
         {
             _config.KeyboundTargeting = KeyboundTargeting.Safety;
